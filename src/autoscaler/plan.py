@@ -21,7 +21,7 @@ logger = logging.getLogger("autoscaler.plan")
 
 OWNER_DAB = "dab"
 OWNER_PLACEHOLDER = "autoscaler-placeholder"
-_API_BASE = "/api/2.0/database/instances"
+_PROJECTS_API = "/api/2.0/postgres/projects"
 
 # COMMAND ----------
 
@@ -47,31 +47,33 @@ from databricks.sdk import WorkspaceClient
 ws = WorkspaceClient()
 
 
-def list_all_instances():
-    instances = []
+def list_all_projects():
+    """List ALL Lakebase projects via /api/2.0/postgres/projects."""
+    projects = []
     page_token = None
     while True:
-        url = f"{_API_BASE}?include_custom_tags=true"
+        url = _PROJECTS_API
         if page_token:
-            url = f"{url}&page_token={page_token}"
+            url = f"{url}?page_token={page_token}"
         resp = ws.api_client.do("GET", url)
-        for item in resp.get("database_instances", []):
-            tags = item.get("effective_custom_tags") or item.get("custom_tags") or []
+        for item in resp.get("projects", []):
+            status = item.get("status", {})
+            tags = status.get("custom_tags") or []
             tag_map = {t["key"]: t["value"] for t in tags if "key" in t}
-            instances.append({
-                "name": item.get("name", ""),
+            project_id = status.get("project_id") or item.get("name", "").removeprefix("projects/")
+            projects.append({
+                "name": project_id,
                 "owner": tag_map.get("owner", ""),
-                "state": item.get("state", ""),
-                "creation_time": item.get("creation_time", ""),
+                "creation_time": item.get("create_time", ""),
             })
         page_token = resp.get("next_page_token")
         if not page_token:
             break
-    return instances
+    return projects
 
 
-all_instances = list_all_instances()
-logger.info("Found %d total instances in workspace", len(all_instances))
+all_instances = list_all_projects()
+logger.info("Found %d total projects in workspace", len(all_instances))
 
 # COMMAND ----------
 

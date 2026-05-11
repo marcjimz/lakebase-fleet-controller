@@ -25,7 +25,7 @@ logger = logging.getLogger("autoscaler")
 
 OWNER_DAB = "dab"
 OWNER_PLACEHOLDER = "autoscaler-placeholder"
-_API_BASE = "/api/2.0/database/instances"
+_PROJECTS_API = "/api/2.0/postgres/projects"
 
 
 # ── Data model ───────────────────────────────────────────────────────────────
@@ -58,61 +58,57 @@ class LakebaseClient:
         from databricks.sdk import WorkspaceClient
         self._ws = WorkspaceClient()
 
-    def list_all_instances(self) -> list[DatabaseInstance]:
+    def list_all_projects(self) -> list[DatabaseInstance]:
+        """List ALL Lakebase projects via /api/2.0/postgres/projects.
+
+        This is the authoritative listing that sees every project in the
+        workspace, unlike /api/2.0/database/instances which only returns
+        a subset.
+        """
         instances = []
         page_token = None
         while True:
-            url = f"{_API_BASE}?include_custom_tags=true"
+            url = _PROJECTS_API
             if page_token:
-                url = f"{url}&page_token={page_token}"
+                url = f"{url}?page_token={page_token}"
             resp = self._ws.api_client.do("GET", url)
-            for item in resp.get("database_instances", []):
-                # API returns tags under effective_custom_tags (merged view)
-                tags = item.get("effective_custom_tags") or item.get("custom_tags") or []
+            for item in resp.get("projects", []):
+                status = item.get("status", {})
+                tags = status.get("custom_tags") or []
+                # name is "projects/{id}" — extract the project_id
+                project_id = status.get("project_id") or item.get("name", "").removeprefix("projects/")
                 instances.append(DatabaseInstance(
-                    name=item.get("name", ""),
+                    name=project_id,
                     uid=item.get("uid", ""),
                     custom_tags=tags,
-                    creation_time=item.get("creation_time", ""),
-                    state=item.get("state", ""),
-                    capacity=item.get("capacity", ""),
-                    effective_stopped=item.get("effective_stopped", False),
+                    creation_time=item.get("create_time", ""),
                 ))
             page_token = resp.get("next_page_token")
             if not page_token:
                 break
         return instances
 
-    def create_instance(self, config: dict) -> dict:
-        logger.info("Creating instance: %s", config.get("name", "?"))
-        return self._ws.api_client.do("POST", _API_BASE, body=config)
+    def create_project(self, project_id: str, display_name: str, custom_tags: list[dict] | None = None) -> dict:
+        """Create a Lakebase project via the projects API."""
+        logger.info("Creating project: %s", project_id)
+        body = {
+            "project_id": project_id,
+            "spec": {"display_name": display_name},
+        }
+        if custom_tags:
+            body["spec"]["custom_tags"] = custom_tags
+        return self._ws.api_client.do("POST", _PROJECTS_API, body=body)
 
-    def delete_instance(self, name: str) -> None:
-        logger.info("Deleting instance: %s", name)
-        self._ws.api_client.do("DELETE", f"{_API_BASE}/{name}")
+    def delete_project(self, project_id: str) -> None:
+        logger.info("Deleting project: %s", project_id)
+        self._ws.api_client.do("DELETE", f"{_PROJECTS_API}/{project_id}")
 
-    def get_instance(self, name: str) -> dict:
-        return self._ws.api_client.do("GET", f"{_API_BASE}/{name}")
+    def get_project(self, project_id: str) -> dict:
+        return self._ws.api_client.do("GET", f"{_PROJECTS_API}/{project_id}")
 
-    def wait_for_state(self, name: str, target: str, timeout: int = 600, interval: int = 10) -> str:
-        """Poll until instance reaches target state or timeout."""
-        deadline = time.time() + timeout
-        while True:
-            resp = self.get_instance(name)
-            state = resp.get("state", "")
-            if state == target:
-                logger.info("Instance %s reached state %s", name, target)
-                return state
-            if time.time() >= deadline:
-                raise TimeoutError(
-                    f"Instance {name} did not reach {target} within {timeout}s (current: {state})"
-                )
-            logger.info("Waiting for %s: state=%s, target=%s", name, state, target)
-            time.sleep(interval)
-
-    def stop_instance(self, name: str) -> None:
-        logger.info("Stopping instance: %s", name)
-        self._ws.api_client.do("PATCH", f"{_API_BASE}/{name}", body={"stopped": True})
+    def get_project_tags(self, project_id: str) -> list[dict]:
+        resp = self.get_project(project_id)
+        return resp.get("status", {}).get("custom_tags") or []
 
 
 # ── Safety guards ────────────────────────────────────────────────────────────
@@ -128,7 +124,7 @@ def _assert_not_dab_owned(inst: DatabaseInstance, action: str) -> None:
 
 def cleanup_orphans(client: LakebaseClient, known_real_names: set[str]) -> int:
     deleted = 0
-    for inst in client.list_all_instances():
+    for inst in client.list_all_projects():
         owner = inst.get_tag("owner")
         if owner == OWNER_DAB and inst.name in known_real_names:
             continue
@@ -136,7 +132,7 @@ def cleanup_orphans(client: LakebaseClient, known_real_names: set[str]) -> int:
             continue
         logger.warning("Deleting orphan: %s (owner=%s)", inst.name, owner)
         _assert_not_dab_owned(inst, "delete orphan")
-        client.delete_instance(inst.name)
+        client.delete_project(inst.name)
         deleted += 1
     if deleted:
         logger.info("Orphan cleanup: deleted %d", deleted)
@@ -144,7 +140,7 @@ def cleanup_orphans(client: LakebaseClient, known_real_names: set[str]) -> int:
 
 
 def shrink_placeholders(client: LakebaseClient, target: int) -> int:
-    placeholders = [i for i in client.list_all_instances() if i.get_tag("owner") == OWNER_PLACEHOLDER]
+    placeholders = [i for i in client.list_all_projects() if i.get_tag("owner") == OWNER_PLACEHOLDER]
     current = len(placeholders)
     if current <= target:
         logger.info("Shrink: no-op (%d <= %d)", current, target)
@@ -154,13 +150,13 @@ def shrink_placeholders(client: LakebaseClient, target: int) -> int:
     for inst in to_delete:
         _assert_not_dab_owned(inst, "shrink")
         logger.info("Shrink: deleting %s", inst.name)
-        client.delete_instance(inst.name)
+        client.delete_project(inst.name)
     logger.info("Shrunk: deleted %d placeholders", len(to_delete))
     return len(to_delete)
 
 
 def fill_placeholders(client: LakebaseClient, target: int) -> int:
-    placeholders = [i for i in client.list_all_instances() if i.get_tag("owner") == OWNER_PLACEHOLDER]
+    placeholders = [i for i in client.list_all_projects() if i.get_tag("owner") == OWNER_PLACEHOLDER]
     current = len(placeholders)
     if current >= target:
         logger.info("Fill: no-op (%d >= %d)", current, target)
@@ -180,18 +176,11 @@ def fill_placeholders(client: LakebaseClient, target: int) -> int:
         while idx in existing_indices:
             idx += 1
         name = f"fleet-placeholder-{idx:04d}"
-        logger.info("Fill: creating %s then stopping", name)
-        client.create_instance({
-            "name": name,
-            "capacity": "CU_1",
-            "custom_tags": [
-                {"key": "owner", "value": OWNER_PLACEHOLDER},
-                {"key": "managed_by", "value": "autoscaler"},
-            ],
-        })
-        # Wait for instance to become AVAILABLE before stopping
-        client.wait_for_state(name, "AVAILABLE")
-        client.stop_instance(name)
+        logger.info("Fill: creating %s", name)
+        client.create_project(name, display_name=name, custom_tags=[
+            {"key": "owner", "value": OWNER_PLACEHOLDER},
+            {"key": "managed_by", "value": "autoscaler"},
+        ])
         existing_indices.add(idx)
         created += 1
         idx += 1
@@ -232,20 +221,19 @@ def cleanup_batch(client: LakebaseClient, delete_names_raw: str) -> int:
     names = [n.strip() for n in delete_names_raw.split("|") if n.strip()]
     deleted = 0
     for name in names:
-        # Safety: refuse to delete DAB-owned instances
+        # Safety: refuse to delete DAB-owned projects
         try:
-            resp = client.get_instance(name)
+            tags = client.get_project_tags(name)
         except Exception as exc:
             if "404" in str(exc) or "NOT_FOUND" in str(exc):
                 logger.info("cleanup_batch: %s already gone (404), skipping", name)
                 continue
             raise
-        tags = resp.get("effective_custom_tags") or resp.get("custom_tags") or []
         owner = _get_tag(tags, "owner")
         if owner == OWNER_DAB:
-            raise RuntimeError(f"REFUSING to delete DAB-managed instance: {name}")
+            raise RuntimeError(f"REFUSING to delete DAB-managed project: {name}")
         logger.info("cleanup_batch: deleting %s (owner=%s)", name, owner)
-        client.delete_instance(name)
+        client.delete_project(name)
         deleted += 1
 
     logger.info("cleanup_batch: deleted %d instances", deleted)
@@ -265,17 +253,11 @@ def create_one(client: LakebaseClient, instance_name: str, max_retries: int = 5)
     for attempt in range(1, max_retries + 1):
         try:
             logger.info("create_one: creating %s (attempt %d/%d)", instance_name, attempt, max_retries)
-            client.create_instance({
-                "name": instance_name,
-                "capacity": "CU_1",
-                "custom_tags": [
-                    {"key": "owner", "value": OWNER_PLACEHOLDER},
-                    {"key": "managed_by", "value": "autoscaler"},
-                ],
-            })
-            client.wait_for_state(instance_name, "AVAILABLE")
-            client.stop_instance(instance_name)
-            logger.info("create_one: %s created and stopped", instance_name)
+            client.create_project(instance_name, display_name=instance_name, custom_tags=[
+                {"key": "owner", "value": OWNER_PLACEHOLDER},
+                {"key": "managed_by", "value": "autoscaler"},
+            ])
+            logger.info("create_one: %s created", instance_name)
             return
         except Exception as exc:
             err = str(exc)

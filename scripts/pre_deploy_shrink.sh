@@ -19,7 +19,7 @@ set -euo pipefail
 
 REAL_NAMES="${1:?Usage: pre_deploy_shrink.sh <real_names> <real_count>}"
 REAL_COUNT="${2:?Usage: pre_deploy_shrink.sh <real_names> <real_count>}"
-API_BASE="/api/2.0/database/instances"
+PROJECTS_API="/api/2.0/postgres/projects"
 OWNER_DAB="dab"
 OWNER_PLACEHOLDER="autoscaler-placeholder"
 
@@ -36,20 +36,20 @@ ALL_INSTANCES="[]"
 PAGE_TOKEN=""
 
 while true; do
-  URL="${API_BASE}?include_custom_tags=true"
+  URL="${PROJECTS_API}"
   if [[ -n "$PAGE_TOKEN" ]]; then
-    URL="${URL}&page_token=${PAGE_TOKEN}"
+    URL="${URL}?page_token=${PAGE_TOKEN}"
   fi
 
   RESP=$(databricks api get "$URL" 2>/dev/null || echo '{}')
 
-  # Extract name, owner tag, and creation_time for each instance
+  # Extract project_id, owner tag, and creation_time from each project
   PAGE_INSTANCES=$(echo "$RESP" | jq -c "[
-    .database_instances // [] | .[] | {
-      name,
-      creation_time,
+    .projects // [] | .[] | {
+      name: (.status.project_id // (.name | ltrimstr(\"projects/\"))),
+      creation_time: .create_time,
       owner: (
-        [(.effective_custom_tags // .custom_tags // [])[] | select(.key == \"owner\") | .value] | first // \"\"
+        [(.status.custom_tags // [])[] | select(.key == \"owner\") | .value] | first // \"\"
       )
     }
   ]")
@@ -101,7 +101,7 @@ if [[ "$ORPHAN_COUNT" -gt 0 ]]; then
   ORPHAN_NAMES=$(echo "$ORPHANS" | jq -r '.[].name')
   while IFS= read -r NAME; do
     echo "  Deleting orphan: $NAME"
-    if databricks api delete "${API_BASE}/${NAME}" 2>/dev/null; then
+    if databricks api delete "${PROJECTS_API}/${NAME}" 2>/dev/null; then
       DELETED=$((DELETED + 1))
     else
       echo "    Warning: failed to delete $NAME (may already be gone)"
@@ -128,7 +128,7 @@ if [[ "$SLOTS_STILL_NEEDED" -gt 0 && "$PLACEHOLDER_COUNT" -gt 0 ]]; then
   SHRINK_NAMES=$(echo "$PLACEHOLDERS" | jq -r "sort_by(.creation_time) | .[:$TO_SHRINK] | .[].name")
   while IFS= read -r NAME; do
     echo "  Deleting placeholder: $NAME"
-    if databricks api delete "${API_BASE}/${NAME}" 2>/dev/null; then
+    if databricks api delete "${PROJECTS_API}/${NAME}" 2>/dev/null; then
       DELETED=$((DELETED + 1))
     else
       echo "    Warning: failed to delete $NAME (may already be gone)"

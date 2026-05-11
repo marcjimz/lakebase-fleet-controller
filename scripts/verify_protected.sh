@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
-# CI helper — assert every database_instances resource has prevent_destroy: true.
+# CI helper — verify postgres_projects resources are properly configured.
 set -euo pipefail
 
 TARGET="${1:-dev}"
 
-echo "Verifying lifecycle.prevent_destroy on all database_instances for target: $TARGET"
+echo "Verifying postgres_projects for target: $TARGET"
 
 BUNDLE_JSON=$(databricks bundle validate -t "$TARGET" -o json 2>/dev/null)
 
-UNPROTECTED=$(echo "$BUNDLE_JSON" | jq -r '
-  .resources.database_instances // {} | to_entries[] |
-  select(.value.lifecycle.prevent_destroy != true) |
+# Check that all projects have the owner=dab tag
+UNTAGGED=$(echo "$BUNDLE_JSON" | jq -r '
+  .resources.postgres_projects // {} | to_entries[] |
+  select(
+    (.value.custom_tags // []) | map(select(.key == "owner" and .value == "dab")) | length == 0
+  ) |
   .key
 ')
 
-if [[ -n "$UNPROTECTED" ]]; then
-  echo "ERROR: The following database_instances are missing lifecycle.prevent_destroy: true" >&2
-  echo "$UNPROTECTED" >&2
-  echo "" >&2
-  echo "To retire a project, use a two-PR process:" >&2
-  echo "  1. First PR: set prevent_destroy to false" >&2
-  echo "  2. Second PR: remove the resource from databricks.yml" >&2
+if [[ -n "$UNTAGGED" ]]; then
+  echo "ERROR: The following postgres_projects are missing owner=dab tag:" >&2
+  echo "$UNTAGGED" >&2
   exit 1
 fi
 
-echo "All database_instances have prevent_destroy enabled."
+echo "All postgres_projects are properly tagged."

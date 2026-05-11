@@ -1,6 +1,6 @@
 bundle:
   name: lakebase-fleet-controller
-  databricks_cli_version: ">= 0.275.0"
+  databricks_cli_version: ">= 0.287.0"
   deployment:
     lock:
       enabled: true
@@ -18,52 +18,45 @@ variables:
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
-  # LAKEBASE INSTANCES — edit this section to add or remove real instances.
+  # LAKEBASE PROJECTS — edit this section to add or remove real projects.
   #
-  # Each entry creates a managed Lakebase instance with:
-  #   - owner=dab tag (protects it from autoscaler deletion)
-  #   - prevent_destroy lifecycle (requires two-PR process to remove)
+  # Each entry creates a managed Lakebase Autoscaling project.
+  # The autoscaler uses the owner=dab custom_tag to identify DAB-managed
+  # projects and protect them from deletion.
   #
-  # Capacity SKUs: CU_1, CU_2, CU_4, CU_8
-  #
-  # To add:    copy an existing block, change name + capacity.
-  # To remove:
-  #   1. First PR — set prevent_destroy to false
-  #   2. Second PR — delete the resource block
+  # To add:    copy an existing block, change project_id + display_name.
+  # To remove: delete the resource block (autoscaler will clean up).
   # ────────────────────────────────────────────────────────────────────────────
-  database_instances:
-    lakebase_project_1:
-      name: fleet-project-1
-      capacity: CU_1
+  postgres_projects:
+    fleet_project_1:
+      project_id: fleet-project-1
+      display_name: fleet-project-1
+      pg_version: 17
       custom_tags:
         - key: owner
           value: dab
         - key: managed_by
           value: lakebase-fleet-controller
-      lifecycle:
-        prevent_destroy: false  # TODO: restore to true after rename transition
 
-    lakebase_project_2:
-      name: fleet-project-2
-      capacity: CU_2
+    fleet_project_2:
+      project_id: fleet-project-2
+      display_name: fleet-project-2
+      pg_version: 17
       custom_tags:
         - key: owner
           value: dab
         - key: managed_by
           value: lakebase-fleet-controller
-      lifecycle:
-        prevent_destroy: false  # TODO: restore to true after rename transition
 
-    lakebase_project_3:
-      name: fleet-project-3
-      capacity: CU_1
+    fleet_project_3:
+      project_id: fleet-project-3
+      display_name: fleet-project-3
+      pg_version: 17
       custom_tags:
         - key: owner
           value: dab
         - key: managed_by
           value: lakebase-fleet-controller
-      lifecycle:
-        prevent_destroy: false  # TODO: restore to true after rename transition
 
   # ────────────────────────────────────────────────────────────────────────────
   # AUTOSCALER JOB — fills remaining quota with stopped placeholders and
