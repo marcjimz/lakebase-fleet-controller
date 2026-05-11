@@ -29,6 +29,9 @@ resources:
       project_id: fleet-proj-1
       display_name: fleet-proj-1
       pg_version: 17
+      default_endpoint_settings:
+        no_suspension: false
+        suspend_timeout_duration: "60s"
       custom_tags:
         - key: owner
           value: dab
@@ -39,6 +42,9 @@ resources:
       project_id: fleet-proj-2
       display_name: fleet-proj-2
       pg_version: 17
+      default_endpoint_settings:
+        no_suspension: false
+        suspend_timeout_duration: "60s"
       custom_tags:
         - key: owner
           value: dab
@@ -49,6 +55,9 @@ resources:
       project_id: fleet-proj-3
       display_name: fleet-proj-3
       pg_version: 17
+      default_endpoint_settings:
+        no_suspension: false
+        suspend_timeout_duration: "60s"
       custom_tags:
         - key: owner
           value: dab
@@ -101,7 +110,7 @@ resources:
           depends_on:
             - task_key: cleanup
           for_each_task:
-            concurrency: 10
+            concurrency: 50
             inputs: "{{tasks.plan.values.create_names}}"
             task:
               task_key: create_one

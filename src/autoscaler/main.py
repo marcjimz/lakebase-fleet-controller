@@ -92,9 +92,16 @@ class LakebaseClient:
         """Create a Lakebase project via the projects API.
 
         project_id is sent as a query parameter (AIP-style), not in the body.
+        Scale-to-zero is enabled by default (suspend after 60s of inactivity).
         """
         logger.info("Creating project: %s", project_id)
-        body: dict = {"spec": {"display_name": display_name}}
+        body: dict = {"spec": {
+            "display_name": display_name,
+            "default_endpoint_settings": {
+                "no_suspension": False,
+                "suspend_timeout_duration": "60s",
+            },
+        }}
         if custom_tags:
             body["spec"]["custom_tags"] = custom_tags
         return self._ws.api_client.do(
