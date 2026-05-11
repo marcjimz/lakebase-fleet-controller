@@ -110,12 +110,15 @@ if [[ "$ORPHAN_COUNT" -gt 0 ]]; then
 fi
 
 # ── Phase 4: Shrink placeholders to free slots for real instances ────────────
-# After orphan cleanup, we need at least REAL_COUNT free slots for deploy.
-# Free slots = (orphans we just deleted) + (placeholders we will delete).
-# We already freed ORPHAN_COUNT slots. If that is enough, skip shrink.
+# Only need free slots for real instances that DON'T already exist.
+# Existing real instances already occupy a slot and don't need new ones.
+# Free slots needed = (new real instances) - (orphans we just deleted).
 
+NEW_REAL_NEEDED=$((REAL_COUNT - REAL_FOUND))
 SLOTS_FREED=$DELETED
-SLOTS_STILL_NEEDED=$((REAL_COUNT - SLOTS_FREED))
+SLOTS_STILL_NEEDED=$((NEW_REAL_NEEDED - SLOTS_FREED))
+
+echo "New real instances needed: $NEW_REAL_NEEDED (total=$REAL_COUNT, existing=$REAL_FOUND)"
 
 if [[ "$SLOTS_STILL_NEEDED" -gt 0 && "$PLACEHOLDER_COUNT" -gt 0 ]]; then
   # Cap at available placeholders

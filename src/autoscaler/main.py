@@ -89,15 +89,17 @@ class LakebaseClient:
         return instances
 
     def create_project(self, project_id: str, display_name: str, custom_tags: list[dict] | None = None) -> dict:
-        """Create a Lakebase project via the projects API."""
+        """Create a Lakebase project via the projects API.
+
+        project_id is sent as a query parameter (AIP-style), not in the body.
+        """
         logger.info("Creating project: %s", project_id)
-        body = {
-            "project_id": project_id,
-            "spec": {"display_name": display_name},
-        }
+        body: dict = {"spec": {"display_name": display_name}}
         if custom_tags:
             body["spec"]["custom_tags"] = custom_tags
-        return self._ws.api_client.do("POST", _PROJECTS_API, body=body)
+        return self._ws.api_client.do(
+            "POST", f"{_PROJECTS_API}?project_id={project_id}", body=body
+        )
 
     def delete_project(self, project_id: str) -> None:
         logger.info("Deleting project: %s", project_id)
