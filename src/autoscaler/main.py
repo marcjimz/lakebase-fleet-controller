@@ -8,6 +8,7 @@ does not support relative imports or __file__-based path discovery.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import sys
@@ -92,7 +93,6 @@ class LakebaseClient:
         """Create a Lakebase project via the projects API.
 
         project_id is sent as a query parameter (AIP-style), not in the body.
-        Scale-to-zero is enabled by default (suspend after 60s of inactivity).
         """
         logger.info("Creating project: %s", project_id)
         body: dict = {"spec": {"display_name": display_name}}
@@ -112,6 +112,77 @@ class LakebaseClient:
     def get_project_tags(self, project_id: str) -> list[dict]:
         resp = self.get_project(project_id)
         return resp.get("status", {}).get("custom_tags") or []
+
+    # ── Endpoint management (scale-to-zero) ──────────────────────────────
+
+    def list_branches(self, project_id: str) -> list[dict]:
+        """List all branches for a project."""
+        resp = self._ws.api_client.do(
+            "GET", f"{_PROJECTS_API}/{project_id}/branches"
+        )
+        return resp.get("branches", [])
+
+    def list_endpoints(self, project_id: str, branch: str) -> list[dict]:
+        """List all endpoints for a project branch."""
+        resp = self._ws.api_client.do(
+            "GET", f"{_PROJECTS_API}/{project_id}/branches/{branch}/endpoints"
+        )
+        return resp.get("endpoints", [])
+
+    def enable_suspension(self, project_id: str, branch: str, endpoint_id: str) -> dict:
+        """Enable scale-to-zero on a specific endpoint (suspend after 60s idle)."""
+        return self._ws.api_client.do(
+            "PATCH",
+            f"{_PROJECTS_API}/{project_id}/branches/{branch}/endpoints/{endpoint_id}",
+            body={
+                "endpoint": {
+                    "spec": {
+                        "no_suspension": False,
+                        "suspend_timeout_duration": "60s",
+                    }
+                },
+                "update_mask": "spec.no_suspension,spec.suspend_timeout_duration",
+            },
+        )
+
+    def enable_scale_to_zero_for_project(self, project_id: str, max_retries: int = 6) -> None:
+        """Discover branches/endpoints and enable suspension on each.
+
+        Retries endpoint discovery because new projects may not have
+        endpoints available immediately after creation.
+        """
+        for attempt in range(1, max_retries + 1):
+            branches = self.list_branches(project_id)
+            if branches:
+                break
+            if attempt == max_retries:
+                logger.warning("scale-to-zero: %s has no branches after %d attempts, skipping", project_id, max_retries)
+                return
+            time.sleep(5)
+
+        for branch_obj in branches:
+            branch_name = branch_obj.get("branch_id") or branch_obj.get("name", "").split("/")[-1]
+            if not branch_name:
+                continue
+
+            for attempt in range(1, max_retries + 1):
+                endpoints = self.list_endpoints(project_id, branch_name)
+                if endpoints:
+                    break
+                if attempt == max_retries:
+                    logger.warning("scale-to-zero: %s/%s has no endpoints after %d attempts, skipping",
+                                   project_id, branch_name, max_retries)
+                    break
+                time.sleep(5)
+            else:
+                continue
+
+            for ep in endpoints:
+                ep_id = ep.get("endpoint_id") or ep.get("name", "").split("/")[-1]
+                if not ep_id:
+                    continue
+                logger.info("scale-to-zero: enabling suspension on %s/%s/%s", project_id, branch_name, ep_id)
+                self.enable_suspension(project_id, branch_name, ep_id)
 
 
 # ── Safety guards ────────────────────────────────────────────────────────────
@@ -259,42 +330,111 @@ def cleanup_batch(client: LakebaseClient, delete_names_raw: str) -> int:
     return deleted
 
 
-def create_one(client: LakebaseClient, instance_name: str, max_retries: int = 5) -> None:
-    """Create a single placeholder instance, wait for AVAILABLE, then stop it.
-
-    Retries with exponential backoff to handle API rate limiting when many
-    iterations run concurrently via for_each_task.
-    """
-    if instance_name == "__SKIP__":
-        logger.info("create_one: nothing to create (sentinel __SKIP__)")
-        return
-
+def _create_one_with_retry(client: LakebaseClient, name: str, max_retries: int = 5) -> bool:
+    """Create a single placeholder and enable scale-to-zero. Returns True on success."""
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info("create_one: creating %s (attempt %d/%d)", instance_name, attempt, max_retries)
-            client.create_project(instance_name, display_name=instance_name, custom_tags=[
+            client.create_project(name, display_name=name, custom_tags=[
                 {"key": "owner", "value": OWNER_PLACEHOLDER},
                 {"key": "managed_by", "value": "autoscaler"},
             ])
-            logger.info("create_one: %s created", instance_name)
-            return
+            client.enable_scale_to_zero_for_project(name)
+            return True
         except Exception as exc:
             err = str(exc)
             if attempt == max_retries:
+                logger.error("batch_create: %s failed after %d attempts: %s", name, max_retries, err[:200])
                 raise
-            # Retry on rate limits (429) or transient server errors (5xx)
             if "429" in err or "RATE_LIMIT" in err or "500" in err or "503" in err:
                 backoff = min(30, 2 ** attempt)
-                logger.warning("create_one: %s attempt %d failed (%s), retrying in %ds",
-                               instance_name, attempt, err[:120], backoff)
+                logger.warning("batch_create: %s attempt %d failed (%s), retrying in %ds",
+                               name, attempt, err[:120], backoff)
                 time.sleep(backoff)
             else:
                 raise
+    return False
+
+
+def batch_create(client: LakebaseClient, create_names_raw: str) -> int:
+    """Create placeholders concurrently using ThreadPoolExecutor.
+
+    Receives a pipe-separated list of names. Each thread creates one project
+    and then enables scale-to-zero on its endpoints.
+    """
+    if create_names_raw == "__NONE__":
+        logger.info("batch_create: nothing to create (sentinel __NONE__)")
+        return 0
+
+    names = [n.strip() for n in create_names_raw.split("|") if n.strip()]
+    if not names:
+        logger.info("batch_create: empty name list, nothing to do")
+        return 0
+
+    logger.info("batch_create: creating %d placeholders with 50 threads", len(names))
+    created = 0
+    failed = 0
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        future_to_name = {
+            executor.submit(_create_one_with_retry, client, name): name
+            for name in names
+        }
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_name), 1):
+            name = future_to_name[future]
+            try:
+                future.result()
+                created += 1
+            except Exception as exc:
+                failed += 1
+                logger.error("batch_create: %s failed: %s", name, str(exc)[:200])
+            if i % 50 == 0 or i == len(names):
+                logger.info("batch_create: progress %d/%d (created=%d, failed=%d)",
+                            i, len(names), created, failed)
+
+    logger.info("batch_create: done — created=%d, failed=%d", created, failed)
+    if failed:
+        raise RuntimeError(f"batch_create: {failed}/{len(names)} projects failed to create")
+    return created
+
+
+def enable_scale_to_zero(client: LakebaseClient) -> int:
+    """One-time migration: enable scale-to-zero on all existing placeholders."""
+    all_projects = client.list_all_projects()
+    placeholders = [p for p in all_projects if p.get_tag("owner") == OWNER_PLACEHOLDER]
+
+    if not placeholders:
+        logger.info("enable_scale_to_zero: no placeholders found")
+        return 0
+
+    logger.info("enable_scale_to_zero: updating %d placeholders with 50 threads", len(placeholders))
+    updated = 0
+    failed = 0
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        future_to_name = {
+            executor.submit(client.enable_scale_to_zero_for_project, p.name): p.name
+            for p in placeholders
+        }
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_name), 1):
+            name = future_to_name[future]
+            try:
+                future.result()
+                updated += 1
+            except Exception as exc:
+                failed += 1
+                logger.error("enable_scale_to_zero: %s failed: %s", name, str(exc)[:200])
+            if i % 50 == 0 or i == len(placeholders):
+                logger.info("enable_scale_to_zero: progress %d/%d (updated=%d, failed=%d)",
+                            i, len(placeholders), updated, failed)
+
+    logger.info("enable_scale_to_zero: done — updated=%d, failed=%d", updated, failed)
+    return updated
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────────
 
-MODES = ["shrink", "fill", "reconcile", "cleanup_orphans", "cleanup_batch", "create_one"]
+MODES = ["shrink", "fill", "reconcile", "cleanup_orphans", "cleanup_batch",
+         "batch_create", "enable_scale_to_zero"]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -304,8 +444,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--quota", type=int, default=1000)
     # cleanup_batch args
     parser.add_argument("--delete-names", default="__NONE__", help="Pipe-separated names to delete")
-    # create_one args
-    parser.add_argument("--instance-name", default="__SKIP__", help="Single instance name to create")
+    # batch_create args
+    parser.add_argument("--create-names", default="__NONE__", help="Pipe-separated names to create")
     return parser.parse_args(argv)
 
 
@@ -318,8 +458,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.mode == "cleanup_batch":
         cleanup_batch(client, args.delete_names)
-    elif args.mode == "create_one":
-        create_one(client, args.instance_name)
+    elif args.mode == "batch_create":
+        batch_create(client, args.create_names)
+    elif args.mode == "enable_scale_to_zero":
+        enable_scale_to_zero(client)
     else:
         # Legacy modes that require real-names / quota
         known_real_names = {n.strip() for n in args.real_names.split("|") if n.strip()}

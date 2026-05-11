@@ -95,24 +95,19 @@ resources:
               - "--delete-names"
               - "{{tasks.plan.values.delete_names}}"
 
-        # ── Step 3: Fill (parallel) ─────────────────────────────────────────
-        # Creates placeholder instances in parallel using for_each_task.
+        # ── Step 3: Fill ──────────────────────────────────────────────────────
+        # Creates all placeholders in a single task using ThreadPoolExecutor.
         - task_key: fill
           depends_on:
             - task_key: cleanup
-          for_each_task:
-            concurrency: 50
-            inputs: "{{tasks.plan.values.create_names}}"
-            task:
-              task_key: create_one
-              environment_key: default
-              spark_python_task:
-                python_file: src/autoscaler/main.py
-                parameters:
-                  - "--mode"
-                  - "create_one"
-                  - "--instance-name"
-                  - "{{input}}"
+          environment_key: default
+          spark_python_task:
+            python_file: src/autoscaler/main.py
+            parameters:
+              - "--mode"
+              - "batch_create"
+              - "--create-names"
+              - "{{tasks.plan.values.create_names}}"
 
       environments:
         - environment_key: default
