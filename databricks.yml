@@ -11,10 +11,10 @@ variables:
     default: ""
   quota:
     description: "Maximum Lakebase instances allowed in the workspace"
-    default: 1000
+    default: 5
   headroom:
     description: "Slots reserved as buffer"
-    default: 10
+    default: 1
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
@@ -28,9 +28,9 @@ resources:
   # To remove: delete the resource block (autoscaler will clean up).
   # ────────────────────────────────────────────────────────────────────────────
   postgres_projects:
-    fleet_project_1:
-      project_id: fleet-project-1
-      display_name: fleet-project-1
+    fleet_proj_1:
+      project_id: fleet-proj-1
+      display_name: fleet-proj-1
       pg_version: 17
       custom_tags:
         - key: owner
@@ -38,9 +38,9 @@ resources:
         - key: managed_by
           value: lakebase-fleet-controller
 
-    fleet_project_2:
-      project_id: fleet-project-2
-      display_name: fleet-project-2
+    fleet_proj_2:
+      project_id: fleet-proj-2
+      display_name: fleet-proj-2
       pg_version: 17
       custom_tags:
         - key: owner
@@ -48,9 +48,9 @@ resources:
         - key: managed_by
           value: lakebase-fleet-controller
 
-    fleet_project_3:
-      project_id: fleet-project-3
-      display_name: fleet-project-3
+    fleet_proj_3:
+      project_id: fleet-proj-3
+      display_name: fleet-proj-3
       pg_version: 17
       custom_tags:
         - key: owner
