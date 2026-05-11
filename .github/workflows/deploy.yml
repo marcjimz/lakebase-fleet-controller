@@ -47,7 +47,7 @@ jobs:
           echo "Extracted: real_names=$REAL_NAMES, quota=$QUOTA, headroom=$HEADROOM"
 
       - name: Deploy bundle
-        run: databricks bundle deploy -t dev
+        run: databricks bundle deploy -t dev --auto-approve
 
       - name: Reconcile fleet
         run: |
