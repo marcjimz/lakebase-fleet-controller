@@ -95,13 +95,7 @@ class LakebaseClient:
         Scale-to-zero is enabled by default (suspend after 60s of inactivity).
         """
         logger.info("Creating project: %s", project_id)
-        body: dict = {"spec": {
-            "display_name": display_name,
-            "default_endpoint_settings": {
-                "no_suspension": False,
-                "suspend_timeout_duration": "60s",
-            },
-        }}
+        body: dict = {"spec": {"display_name": display_name}}
         if custom_tags:
             body["spec"]["custom_tags"] = custom_tags
         return self._ws.api_client.do(
