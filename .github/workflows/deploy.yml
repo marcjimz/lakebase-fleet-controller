@@ -39,12 +39,17 @@ jobs:
         run: |
           BUNDLE=$(databricks bundle validate -t dev -o json)
           REAL_NAMES=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab") | .value.name] | join("|")')
+          REAL_COUNT=$(echo "$BUNDLE" | jq '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab")] | length')
           QUOTA=$(echo "$BUNDLE" | jq -r '.variables.quota.value // 1000')
           HEADROOM=$(echo "$BUNDLE" | jq -r '.variables.headroom.value // 10')
-          echo "real_names=$REAL_NAMES" >> $GITHUB_OUTPUT
-          echo "quota=$QUOTA"           >> $GITHUB_OUTPUT
-          echo "headroom=$HEADROOM"     >> $GITHUB_OUTPUT
-          echo "Extracted: real_names=$REAL_NAMES, quota=$QUOTA, headroom=$HEADROOM"
+          echo "real_names=$REAL_NAMES"   >> $GITHUB_OUTPUT
+          echo "real_count=$REAL_COUNT"   >> $GITHUB_OUTPUT
+          echo "quota=$QUOTA"             >> $GITHUB_OUTPUT
+          echo "headroom=$HEADROOM"       >> $GITHUB_OUTPUT
+          echo "Extracted: real_names=$REAL_NAMES, real_count=$REAL_COUNT, quota=$QUOTA, headroom=$HEADROOM"
+
+      - name: Pre-deploy shrink (free slots for real instances)
+        run: bash scripts/pre_deploy_shrink.sh ${{ steps.targets.outputs.real_count }}
 
       - name: Deploy bundle
         run: databricks bundle deploy -t dev --auto-approve
