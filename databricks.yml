@@ -1,0 +1,144 @@
+bundle:
+  name: lakebase-fleet-controller
+  databricks_cli_version: ">= 0.275.0"
+  deployment:
+    lock:
+      enabled: true
+
+variables:
+  deploy_sp:
+    description: "Service principal for CI deploys (used by run_as in promotion targets)"
+    default: ""
+  quota:
+    description: "Maximum Lakebase instances allowed in the workspace"
+    default: 1000
+  headroom:
+    description: "Slots reserved as buffer"
+    default: 10
+
+resources:
+  # ────────────────────────────────────────────────────────────────────────────
+  # LAKEBASE INSTANCES — edit this section to add or remove real instances.
+  #
+  # Each entry creates a managed Lakebase instance with:
+  #   - owner=dab tag (protects it from autoscaler deletion)
+  #   - prevent_destroy lifecycle (requires two-PR process to remove)
+  #
+  # Capacity SKUs: CU_1, CU_2, CU_4, CU_8
+  #
+  # To add:    copy an existing block, change name + capacity.
+  # To remove:
+  #   1. First PR — set prevent_destroy to false
+  #   2. Second PR — delete the resource block
+  # ────────────────────────────────────────────────────────────────────────────
+  database_instances:
+    lakebase_tenant_acme:
+      name: fleet-acme
+      capacity: CU_1
+      custom_tags:
+        - key: owner
+          value: dab
+        - key: managed_by
+          value: lakebase-fleet-controller
+      lifecycle:
+        prevent_destroy: true
+
+    lakebase_tenant_globex:
+      name: fleet-globex
+      capacity: CU_2
+      custom_tags:
+        - key: owner
+          value: dab
+        - key: managed_by
+          value: lakebase-fleet-controller
+      lifecycle:
+        prevent_destroy: true
+
+    lakebase_tenant_initech:
+      name: fleet-initech
+      capacity: CU_1
+      custom_tags:
+        - key: owner
+          value: dab
+        - key: managed_by
+          value: lakebase-fleet-controller
+      lifecycle:
+        prevent_destroy: true
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # AUTOSCALER JOB — fills remaining quota with stopped placeholders and
+  # cleans up anything not managed by this bundle.
+  # ────────────────────────────────────────────────────────────────────────────
+  jobs:
+    autoscaler:
+      name: lakebase-fleet-autoscaler
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: reconcile
+          environment_key: default
+          spark_python_task:
+            python_file: src/autoscaler/main.py
+            parameters:
+              - "--mode"
+              - "{{job.parameters.mode}}"
+              - "--real-names"
+              - "{{job.parameters.real_names}}"
+              - "--quota"
+              - "{{job.parameters.quota}}"
+              - "--headroom"
+              - "{{job.parameters.headroom}}"
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - databricks-sdk
+      parameters:
+        - name: mode
+          default: reconcile
+        - name: real_names
+          default: ""
+        - name: quota
+          default: "1000"
+        - name: headroom
+          default: "10"
+      tags:
+        owner: dab
+
+targets:
+  dev:
+    workspace:
+      host: https://fevm-lakebase-hls-workshop.cloud.databricks.com
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Promotion targets — uncomment as needed.
+  # Each target MUST point to its own workspace. Using the same workspace
+  # across multiple targets is NOT tested and NOT recommended.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  # qa:
+  #   mode: production
+  #   git:
+  #     branch: main
+  #   workspace:
+  #     host: https://<QA_WORKSPACE>.cloud.databricks.com
+  #   run_as:
+  #     service_principal_name: ${var.deploy_sp}
+
+  # stg:
+  #   mode: production
+  #   git:
+  #     branch: main
+  #   workspace:
+  #     host: https://<STG_WORKSPACE>.cloud.databricks.com
+  #   run_as:
+  #     service_principal_name: ${var.deploy_sp}
+
+  # prod:
+  #   mode: production
+  #   git:
+  #     branch: main
+  #   workspace:
+  #     host: https://<PROD_WORKSPACE>.cloud.databricks.com
+  #   run_as:
+  #     service_principal_name: ${var.deploy_sp}

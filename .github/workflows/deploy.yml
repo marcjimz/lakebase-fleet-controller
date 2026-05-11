@@ -1,0 +1,328 @@
+name: Deploy Lakebase Fleet Controller
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEV
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  deploy-dev:
+    runs-on: ubuntu-latest
+    environment: DEV
+    concurrency:
+      group: lakebase-fleet-dev
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+
+      - name: Authenticate
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+        run: databricks current-user me
+
+      - name: Validate bundle
+        run: databricks bundle validate -t dev
+
+      - name: Verify resource protections
+        run: bash scripts/verify_protected.sh dev
+
+      - name: Extract deploy targets from bundle
+        id: targets
+        run: |
+          BUNDLE=$(databricks bundle validate -t dev -o json)
+          REAL_NAMES=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab") | .value.name] | join("|")')
+          NEW_REAL=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab")] | length')
+          QUOTA=$(echo "$BUNDLE" | jq -r '.variables.quota.value // 1000')
+          HEADROOM=$(echo "$BUNDLE" | jq -r '.variables.headroom.value // 10')
+          echo "real_names=$REAL_NAMES" >> $GITHUB_OUTPUT
+          echo "new_real=$NEW_REAL"     >> $GITHUB_OUTPUT
+          echo "quota=$QUOTA"           >> $GITHUB_OUTPUT
+          echo "headroom=$HEADROOM"     >> $GITHUB_OUTPUT
+          echo "Extracted: real=$NEW_REAL ($REAL_NAMES), quota=$QUOTA, headroom=$HEADROOM"
+
+      - name: Detect first deploy
+        id: detect
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+        run: |
+          if databricks jobs list --name lakebase-fleet-autoscaler -o json | jq -e '.[0]' >/dev/null 2>&1; then
+            echo "first_deploy=false" >> $GITHUB_OUTPUT
+          else
+            echo "first_deploy=true"  >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pre-deploy SHRINK (skip on first deploy)
+        if: steps.detect.outputs.first_deploy == 'false'
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+        run: |
+          databricks bundle run autoscaler -t dev \
+            --params mode=shrink,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+
+      - name: Deploy bundle
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+        run: databricks bundle deploy -t dev
+
+      - name: Post-deploy FILL
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+        run: |
+          databricks bundle run autoscaler -t dev \
+            --params mode=fill,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+
+      - name: Verify final state
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+        run: |
+          databricks bundle run autoscaler -t dev \
+            --params mode=reconcile,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # QA — uncomment to enable. Requires a "QA" GitHub environment.
+  # ───────────────────────────────────────────────────────────────────────────
+  # deploy-qa:
+  #   needs: deploy-dev
+  #   runs-on: ubuntu-latest
+  #   environment: QA
+  #   concurrency:
+  #     group: lakebase-fleet-qa
+  #     cancel-in-progress: false
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: databricks/setup-cli@main
+  #     - name: Authenticate
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: databricks current-user me
+  #     - name: Validate & extract
+  #       id: targets
+  #       run: |
+  #         databricks bundle validate -t qa
+  #         bash scripts/verify_protected.sh qa
+  #         BUNDLE=$(databricks bundle validate -t qa -o json)
+  #         REAL_NAMES=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab") | .value.name] | join("|")')
+  #         NEW_REAL=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab")] | length')
+  #         QUOTA=$(echo "$BUNDLE" | jq -r '.variables.quota.value // 1000')
+  #         HEADROOM=$(echo "$BUNDLE" | jq -r '.variables.headroom.value // 10')
+  #         echo "real_names=$REAL_NAMES" >> $GITHUB_OUTPUT
+  #         echo "new_real=$NEW_REAL"     >> $GITHUB_OUTPUT
+  #         echo "quota=$QUOTA"           >> $GITHUB_OUTPUT
+  #         echo "headroom=$HEADROOM"     >> $GITHUB_OUTPUT
+  #     - name: Detect first deploy
+  #       id: detect
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         if databricks jobs list --name lakebase-fleet-autoscaler -o json | jq -e '.[0]' >/dev/null 2>&1; then
+  #           echo "first_deploy=false" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "first_deploy=true"  >> $GITHUB_OUTPUT
+  #         fi
+  #     - name: Pre-deploy SHRINK
+  #       if: steps.detect.outputs.first_deploy == 'false'
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t qa \
+  #           --params mode=shrink,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+  #     - name: Deploy bundle
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: databricks bundle deploy -t qa
+  #     - name: Post-deploy FILL
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t qa \
+  #           --params mode=fill,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+  #     - name: Verify final state
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t qa \
+  #           --params mode=reconcile,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # STG — uncomment to enable. Requires a "STG" GitHub environment.
+  # ───────────────────────────────────────────────────────────────────────────
+  # deploy-stg:
+  #   needs: deploy-qa
+  #   runs-on: ubuntu-latest
+  #   environment: STG
+  #   concurrency:
+  #     group: lakebase-fleet-stg
+  #     cancel-in-progress: false
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: databricks/setup-cli@main
+  #     - name: Authenticate
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: databricks current-user me
+  #     - name: Validate & extract
+  #       id: targets
+  #       run: |
+  #         databricks bundle validate -t stg
+  #         bash scripts/verify_protected.sh stg
+  #         BUNDLE=$(databricks bundle validate -t stg -o json)
+  #         REAL_NAMES=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab") | .value.name] | join("|")')
+  #         NEW_REAL=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab")] | length')
+  #         QUOTA=$(echo "$BUNDLE" | jq -r '.variables.quota.value // 1000')
+  #         HEADROOM=$(echo "$BUNDLE" | jq -r '.variables.headroom.value // 10')
+  #         echo "real_names=$REAL_NAMES" >> $GITHUB_OUTPUT
+  #         echo "new_real=$NEW_REAL"     >> $GITHUB_OUTPUT
+  #         echo "quota=$QUOTA"           >> $GITHUB_OUTPUT
+  #         echo "headroom=$HEADROOM"     >> $GITHUB_OUTPUT
+  #     - name: Detect first deploy
+  #       id: detect
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         if databricks jobs list --name lakebase-fleet-autoscaler -o json | jq -e '.[0]' >/dev/null 2>&1; then
+  #           echo "first_deploy=false" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "first_deploy=true"  >> $GITHUB_OUTPUT
+  #         fi
+  #     - name: Pre-deploy SHRINK
+  #       if: steps.detect.outputs.first_deploy == 'false'
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t stg \
+  #           --params mode=shrink,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+  #     - name: Deploy bundle
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: databricks bundle deploy -t stg
+  #     - name: Post-deploy FILL
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t stg \
+  #           --params mode=fill,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+  #     - name: Verify final state
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t stg \
+  #           --params mode=reconcile,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PROD — uncomment to enable. Requires a "PROD" GitHub environment
+  # with required reviewers for human-in-the-loop approval.
+  # ───────────────────────────────────────────────────────────────────────────
+  # deploy-prod:
+  #   needs: deploy-stg
+  #   runs-on: ubuntu-latest
+  #   environment: PROD
+  #   concurrency:
+  #     group: lakebase-fleet-prod
+  #     cancel-in-progress: false
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: databricks/setup-cli@main
+  #     - name: Authenticate
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: databricks current-user me
+  #     - name: Validate & extract
+  #       id: targets
+  #       run: |
+  #         databricks bundle validate -t prod
+  #         bash scripts/verify_protected.sh prod
+  #         BUNDLE=$(databricks bundle validate -t prod -o json)
+  #         REAL_NAMES=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab") | .value.name] | join("|")')
+  #         NEW_REAL=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab")] | length')
+  #         QUOTA=$(echo "$BUNDLE" | jq -r '.variables.quota.value // 1000')
+  #         HEADROOM=$(echo "$BUNDLE" | jq -r '.variables.headroom.value // 10')
+  #         echo "real_names=$REAL_NAMES" >> $GITHUB_OUTPUT
+  #         echo "new_real=$NEW_REAL"     >> $GITHUB_OUTPUT
+  #         echo "quota=$QUOTA"           >> $GITHUB_OUTPUT
+  #         echo "headroom=$HEADROOM"     >> $GITHUB_OUTPUT
+  #     - name: Detect first deploy
+  #       id: detect
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         if databricks jobs list --name lakebase-fleet-autoscaler -o json | jq -e '.[0]' >/dev/null 2>&1; then
+  #           echo "first_deploy=false" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "first_deploy=true"  >> $GITHUB_OUTPUT
+  #         fi
+  #     - name: Pre-deploy SHRINK
+  #       if: steps.detect.outputs.first_deploy == 'false'
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t prod \
+  #           --params mode=shrink,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+  #     - name: Deploy bundle
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: databricks bundle deploy -t prod
+  #     - name: Post-deploy FILL
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t prod \
+  #           --params mode=fill,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+  #     - name: Verify final state
+  #       env:
+  #         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #         DATABRICKS_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+  #         DATABRICKS_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+  #       run: |
+  #         databricks bundle run autoscaler -t prod \
+  #           --params mode=reconcile,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
