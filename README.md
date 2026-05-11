@@ -10,21 +10,44 @@ A single Databricks Asset Bundle that manages a fleet of Lakebase projects. You 
 
 ## Setup
 
-### 1. Create a GitHub environment
+### 1. Create a service principal
+
+Create a service principal in your Databricks workspace for CI authentication:
+
+```bash
+# Create the SP
+databricks service-principals create --display-name "lakebase-fleet-controller-ci" -o json
+
+# Note the applicationId from the output — this is your SP_CLIENT_ID
+
+# Generate an OAuth secret (note the id from the create output)
+databricks api post /api/2.0/accounts/servicePrincipals/<SP_ID>/credentials/secrets
+
+# Note the secret from the output — this is your SP_CLIENT_SECRET
+
+# Add the SP to the admins group (get the group ID first)
+databricks groups list -o json  # find the admins group ID
+databricks api patch /api/2.0/preview/scim/v2/Groups/<ADMINS_GROUP_ID> --json '{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+  "Operations": [{"op": "add", "path": "members", "value": [{"value": "<SP_ID>"}]}]
+}'
+```
+
+### 2. Create a GitHub environment
 
 In your repo settings, create a **DEV** environment with these secrets:
 
 | Secret | Value |
 |---|---|
-| `DATABRICKS_HOST` | Your workspace URL |
-| `SP_CLIENT_ID` | Service principal OAuth client ID |
-| `SP_CLIENT_SECRET` | Service principal OAuth client secret |
+| `DATABRICKS_HOST` | Your workspace URL (e.g. `https://myworkspace.cloud.databricks.com`) |
+| `SP_CLIENT_ID` | Service principal `applicationId` from step 1 |
+| `SP_CLIENT_SECRET` | OAuth `secret` from step 1 |
 
-### 2. Configure the bundle
+### 3. Configure the bundle
 
-In `databricks.yml`, set your workspace host under `targets.dev` and the `deploy_sp` variable to your service principal name.
+In `databricks.yml`, set your workspace host under `targets.dev`.
 
-### 3. Add a project
+### 4. Add a project
 
 Add a `database_instances` resource block to `databricks.yml`:
 
@@ -43,13 +66,13 @@ Add a `database_instances` resource block to `databricks.yml`:
 
 Push to `main`. CI deploys the project and fills remaining quota with placeholders.
 
-### 4. Remove a project
+### 5. Remove a project
 
 Two-PR process (by design):
 
 1. First PR: set `prevent_destroy: false` on the resource
 2. Second PR: delete the resource block
 
-### 5. Enable promotion stages
+### 6. Enable promotion stages
 
 Uncomment the `qa`, `stg`, and/or `prod` targets in `databricks.yml` and the matching jobs in `.github/workflows/deploy.yml`. Create a GitHub environment for each with its own secrets. Stages depend on each other: DEV -> QA -> STG -> PROD.
