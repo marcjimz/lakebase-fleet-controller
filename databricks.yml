@@ -11,10 +11,10 @@ variables:
     default: ""
   quota:
     description: "Maximum Lakebase instances allowed in the workspace"
-    default: 5
+    default: 1000
   headroom:
     description: "Slots reserved as buffer"
-    default: 1
+    default: 10
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
