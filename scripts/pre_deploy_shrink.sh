@@ -1,24 +1,38 @@
 #!/usr/bin/env bash
-# Pre-deploy shrink — deletes placeholder instances to free slots for bundle deploy.
+# Pre-deploy state reconciliation — enforces the workspace invariant BEFORE
+# bundle deploy so that deploy never fails due to capacity.
 #
-# When the workspace is at capacity, `databricks bundle deploy` cannot create
-# new real instances. This script frees enough slots BEFORE deploy by deleting
-# the oldest autoscaler-placeholder instances via the Lakebase API.
+# Invariant: the ONLY instances allowed in the workspace are:
+#   1. Real instances declared in the DAB bundle (owner=dab, name in REAL_NAMES)
+#   2. Autoscaler placeholders (owner=autoscaler-placeholder)
+#   Everything else is an orphan and gets deleted.
 #
-# Usage: bash scripts/pre_deploy_shrink.sh <slots_needed>
-#   slots_needed: number of placeholder instances to delete (typically = real instance count)
+# After orphan cleanup, enough placeholders are deleted to guarantee free
+# slots for any real instances that bundle deploy needs to create.
+#
+# Usage: bash scripts/pre_deploy_shrink.sh <real_names> <real_count>
+#   real_names:  pipe-separated bundle instance names (e.g. "fleet-project-1|fleet-project-2")
+#   real_count:  number of real instances (slots to guarantee)
 #
 # Requires: databricks CLI authenticated (DATABRICKS_HOST + credentials)
 set -euo pipefail
 
-SLOTS_NEEDED="${1:?Usage: pre_deploy_shrink.sh <slots_needed>}"
+REAL_NAMES="${1:?Usage: pre_deploy_shrink.sh <real_names> <real_count>}"
+REAL_COUNT="${2:?Usage: pre_deploy_shrink.sh <real_names> <real_count>}"
 API_BASE="/api/2.0/database/instances"
+OWNER_DAB="dab"
 OWNER_PLACEHOLDER="autoscaler-placeholder"
 
-echo "Pre-deploy shrink: freeing $SLOTS_NEEDED slot(s) for bundle deploy"
+echo "=== Pre-deploy state reconciliation ==="
+echo "Real names: $REAL_NAMES"
+echo "Real count: $REAL_COUNT"
 
-# Collect all placeholder instances across pages
-ALL_PLACEHOLDERS="[]"
+# Build a jq-friendly array of allowed real names
+REAL_NAMES_JSON=$(echo "$REAL_NAMES" | tr '|' '\n' | jq -R . | jq -s .)
+
+# ── Phase 1: List all instances ──────────────────────────────────────────────
+
+ALL_INSTANCES="[]"
 PAGE_TOKEN=""
 
 while true; do
@@ -29,16 +43,18 @@ while true; do
 
   RESP=$(databricks api get "$URL" 2>/dev/null || echo '{}')
 
-  # Extract placeholders from this page: instances with owner=autoscaler-placeholder
-  PAGE_PLACEHOLDERS=$(echo "$RESP" | jq -c "[
-    .database_instances // [] | .[] |
-    select(
-      (.effective_custom_tags // .custom_tags // [])[] |
-      .key == \"owner\" and .value == \"$OWNER_PLACEHOLDER\"
-    ) | { name, creation_time }
+  # Extract name, owner tag, and creation_time for each instance
+  PAGE_INSTANCES=$(echo "$RESP" | jq -c "[
+    .database_instances // [] | .[] | {
+      name,
+      creation_time,
+      owner: (
+        [(.effective_custom_tags // .custom_tags // [])[] | select(.key == \"owner\") | .value] | first // \"\"
+      )
+    }
   ]")
 
-  ALL_PLACEHOLDERS=$(echo "$ALL_PLACEHOLDERS $PAGE_PLACEHOLDERS" | jq -s 'add')
+  ALL_INSTANCES=$(echo "$ALL_INSTANCES $PAGE_INSTANCES" | jq -s 'add')
 
   PAGE_TOKEN=$(echo "$RESP" | jq -r '.next_page_token // empty')
   if [[ -z "$PAGE_TOKEN" ]]; then
@@ -46,30 +62,78 @@ while true; do
   fi
 done
 
-TOTAL=$(echo "$ALL_PLACEHOLDERS" | jq 'length')
-echo "Found $TOTAL placeholder instance(s)"
+TOTAL=$(echo "$ALL_INSTANCES" | jq 'length')
+echo "Found $TOTAL total instance(s) in workspace"
 
 if [[ "$TOTAL" -eq 0 ]]; then
-  echo "No placeholders to delete — workspace may have room already"
+  echo "Workspace is empty — nothing to reconcile"
   exit 0
 fi
 
-# Sort by creation_time (oldest first) and take only what we need
-TO_DELETE=$(echo "$ALL_PLACEHOLDERS" | jq -r "sort_by(.creation_time) | .[:$SLOTS_NEEDED] | .[].name")
+# ── Phase 2: Classify instances ──────────────────────────────────────────────
 
-if [[ -z "$TO_DELETE" ]]; then
-  echo "Nothing to delete"
-  exit 0
-fi
+# Real: owner=dab AND name in the bundle's real_names list
+REAL=$(echo "$ALL_INSTANCES" | jq -c --argjson allowed "$REAL_NAMES_JSON" \
+  '[.[] | select(.owner == "dab" and (.name as $n | $allowed | index($n)))]')
+
+# Placeholders: owner=autoscaler-placeholder
+PLACEHOLDERS=$(echo "$ALL_INSTANCES" | jq -c \
+  '[.[] | select(.owner == "autoscaler-placeholder")]')
+
+# Orphans: everything else (not a known real instance, not a placeholder)
+ORPHANS=$(echo "$ALL_INSTANCES" | jq -c --argjson allowed "$REAL_NAMES_JSON" \
+  '[.[] | select(
+    (.owner == "dab" and (.name as $n | $allowed | index($n))) | not
+  ) | select(.owner != "autoscaler-placeholder")]')
+
+REAL_FOUND=$(echo "$REAL" | jq 'length')
+PLACEHOLDER_COUNT=$(echo "$PLACEHOLDERS" | jq 'length')
+ORPHAN_COUNT=$(echo "$ORPHANS" | jq 'length')
+
+echo "Classification: real=$REAL_FOUND, placeholders=$PLACEHOLDER_COUNT, orphans=$ORPHAN_COUNT"
+
+# ── Phase 3: Delete orphans ──────────────────────────────────────────────────
 
 DELETED=0
-while IFS= read -r NAME; do
-  echo "Deleting placeholder: $NAME"
-  if databricks api delete "${API_BASE}/${NAME}" 2>/dev/null; then
-    DELETED=$((DELETED + 1))
-  else
-    echo "  Warning: failed to delete $NAME (may already be gone)"
-  fi
-done <<< "$TO_DELETE"
 
-echo "Pre-deploy shrink complete: deleted $DELETED placeholder(s)"
+if [[ "$ORPHAN_COUNT" -gt 0 ]]; then
+  echo "--- Deleting $ORPHAN_COUNT orphan(s) ---"
+  ORPHAN_NAMES=$(echo "$ORPHANS" | jq -r '.[].name')
+  while IFS= read -r NAME; do
+    echo "  Deleting orphan: $NAME"
+    if databricks api delete "${API_BASE}/${NAME}" 2>/dev/null; then
+      DELETED=$((DELETED + 1))
+    else
+      echo "    Warning: failed to delete $NAME (may already be gone)"
+    fi
+  done <<< "$ORPHAN_NAMES"
+fi
+
+# ── Phase 4: Shrink placeholders to free slots for real instances ────────────
+# After orphan cleanup, we need at least REAL_COUNT free slots for deploy.
+# Free slots = (orphans we just deleted) + (placeholders we will delete).
+# We already freed ORPHAN_COUNT slots. If that is enough, skip shrink.
+
+SLOTS_FREED=$DELETED
+SLOTS_STILL_NEEDED=$((REAL_COUNT - SLOTS_FREED))
+
+if [[ "$SLOTS_STILL_NEEDED" -gt 0 && "$PLACEHOLDER_COUNT" -gt 0 ]]; then
+  # Cap at available placeholders
+  TO_SHRINK=$SLOTS_STILL_NEEDED
+  if [[ "$TO_SHRINK" -gt "$PLACEHOLDER_COUNT" ]]; then
+    TO_SHRINK=$PLACEHOLDER_COUNT
+  fi
+
+  echo "--- Shrinking $TO_SHRINK placeholder(s) to free slots ---"
+  SHRINK_NAMES=$(echo "$PLACEHOLDERS" | jq -r "sort_by(.creation_time) | .[:$TO_SHRINK] | .[].name")
+  while IFS= read -r NAME; do
+    echo "  Deleting placeholder: $NAME"
+    if databricks api delete "${API_BASE}/${NAME}" 2>/dev/null; then
+      DELETED=$((DELETED + 1))
+    else
+      echo "    Warning: failed to delete $NAME (may already be gone)"
+    fi
+  done <<< "$SHRINK_NAMES"
+fi
+
+echo "=== Pre-deploy reconciliation complete: deleted $DELETED instance(s) ==="

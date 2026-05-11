@@ -48,8 +48,8 @@ jobs:
           echo "headroom=$HEADROOM"       >> $GITHUB_OUTPUT
           echo "Extracted: real_names=$REAL_NAMES, real_count=$REAL_COUNT, quota=$QUOTA, headroom=$HEADROOM"
 
-      - name: Pre-deploy shrink (free slots for real instances)
-        run: bash scripts/pre_deploy_shrink.sh ${{ steps.targets.outputs.real_count }}
+      - name: Pre-deploy reconciliation (cleanup orphans + free slots)
+        run: bash scripts/pre_deploy_shrink.sh "${{ steps.targets.outputs.real_names }}" "${{ steps.targets.outputs.real_count }}"
 
       - name: Deploy bundle
         run: databricks bundle deploy -t dev --auto-approve
