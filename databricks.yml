@@ -11,10 +11,10 @@ variables:
     default: ""
   quota:
     description: "Maximum Lakebase instances allowed in the workspace"
-    default: 1000
+    default: 5
   headroom:
     description: "Slots reserved as buffer"
-    default: 10
+    default: 1
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
@@ -99,9 +99,9 @@ resources:
         - name: real_names
           default: ""
         - name: quota
-          default: "1000"
+          default: "5"
         - name: headroom
-          default: "10"
+          default: "1"
       tags:
         owner: dab
 
