@@ -66,6 +66,11 @@ resources:
     autoscaler:
       name: lakebase-fleet-autoscaler
       max_concurrent_runs: 1
+      # Run every 10 minutes to self-heal (repopulate deleted placeholders,
+      # clean up orphans). CI also triggers an immediate run after deploy.
+      schedule:
+        quartz_cron_expression: "0 */10 * * * ?"
+        timezone_id: "UTC"
       tasks:
         # ── Step 1: Plan ────────────────────────────────────────────────────
         # Notebook task so it can use dbutils.jobs.taskValues.set() to pass
@@ -119,13 +124,17 @@ resources:
             client: "1"
             dependencies:
               - databricks-sdk
+      # ── Job parameters ──────────────────────────────────────────────────
+      # Defaults are used by scheduled runs. CI overrides them with --params.
+      # IMPORTANT: when adding/removing postgres_projects above, update
+      # the real_names default to match (pipe-separated project_ids).
       parameters:
         - name: real_names
-          default: ""
+          default: "fleet-proj-1|fleet-proj-2|fleet-proj-3"
         - name: quota
-          default: "1000"
+          default: "${var.quota}"
         - name: headroom
-          default: "10"
+          default: "${var.headroom}"
       tags:
         owner: dab
 
