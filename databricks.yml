@@ -33,7 +33,7 @@ resources:
   # ────────────────────────────────────────────────────────────────────────────
   database_instances:
     lakebase_tenant_acme:
-      name: fleet-acme
+      name: v2-fleet-acme
       capacity: CU_1
       custom_tags:
         - key: owner
@@ -44,7 +44,7 @@ resources:
         prevent_destroy: true
 
     lakebase_tenant_globex:
-      name: fleet-globex
+      name: v2-fleet-globex
       capacity: CU_2
       custom_tags:
         - key: owner
@@ -55,7 +55,7 @@ resources:
         prevent_destroy: true
 
     lakebase_tenant_initech:
-      name: fleet-initech
+      name: v2-fleet-initech
       capacity: CU_1
       custom_tags:
         - key: owner
