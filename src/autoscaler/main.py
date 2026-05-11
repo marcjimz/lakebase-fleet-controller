@@ -252,24 +252,43 @@ def cleanup_batch(client: LakebaseClient, delete_names_raw: str) -> int:
     return deleted
 
 
-def create_one(client: LakebaseClient, instance_name: str) -> None:
-    """Create a single placeholder instance, wait for AVAILABLE, then stop it."""
+def create_one(client: LakebaseClient, instance_name: str, max_retries: int = 5) -> None:
+    """Create a single placeholder instance, wait for AVAILABLE, then stop it.
+
+    Retries with exponential backoff to handle API rate limiting when many
+    iterations run concurrently via for_each_task.
+    """
     if instance_name == "__SKIP__":
         logger.info("create_one: nothing to create (sentinel __SKIP__)")
         return
 
-    logger.info("create_one: creating %s", instance_name)
-    client.create_instance({
-        "name": instance_name,
-        "capacity": "CU_1",
-        "custom_tags": [
-            {"key": "owner", "value": OWNER_PLACEHOLDER},
-            {"key": "managed_by", "value": "autoscaler"},
-        ],
-    })
-    client.wait_for_state(instance_name, "AVAILABLE")
-    client.stop_instance(instance_name)
-    logger.info("create_one: %s created and stopped", instance_name)
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info("create_one: creating %s (attempt %d/%d)", instance_name, attempt, max_retries)
+            client.create_instance({
+                "name": instance_name,
+                "capacity": "CU_1",
+                "custom_tags": [
+                    {"key": "owner", "value": OWNER_PLACEHOLDER},
+                    {"key": "managed_by", "value": "autoscaler"},
+                ],
+            })
+            client.wait_for_state(instance_name, "AVAILABLE")
+            client.stop_instance(instance_name)
+            logger.info("create_one: %s created and stopped", instance_name)
+            return
+        except Exception as exc:
+            err = str(exc)
+            if attempt == max_retries:
+                raise
+            # Retry on rate limits (429) or transient server errors (5xx)
+            if "429" in err or "RATE_LIMIT" in err or "500" in err or "503" in err:
+                backoff = min(30, 2 ** attempt)
+                logger.warning("create_one: %s attempt %d failed (%s), retrying in %ds",
+                               instance_name, attempt, err[:120], backoff)
+                time.sleep(backoff)
+            else:
+                raise
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────────

@@ -107,7 +107,7 @@ resources:
           depends_on:
             - task_key: cleanup
           for_each_task:
-            concurrency: 100
+            concurrency: 10
             inputs: "{{tasks.plan.values.create_names}}"
             task:
               task_key: create_one
