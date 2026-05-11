@@ -38,39 +38,17 @@ jobs:
         run: |
           BUNDLE=$(databricks bundle validate -t dev -o json)
           REAL_NAMES=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab") | .value.name] | join("|")')
-          NEW_REAL=$(echo "$BUNDLE" | jq -r '[.resources.database_instances // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab")] | length')
           QUOTA=$(echo "$BUNDLE" | jq -r '.variables.quota.value // 1000')
           HEADROOM=$(echo "$BUNDLE" | jq -r '.variables.headroom.value // 10')
           echo "real_names=$REAL_NAMES" >> $GITHUB_OUTPUT
-          echo "new_real=$NEW_REAL"     >> $GITHUB_OUTPUT
           echo "quota=$QUOTA"           >> $GITHUB_OUTPUT
           echo "headroom=$HEADROOM"     >> $GITHUB_OUTPUT
-          echo "Extracted: real=$NEW_REAL ($REAL_NAMES), quota=$QUOTA, headroom=$HEADROOM"
-
-      - name: Detect first deploy
-        id: detect
-        run: |
-          if databricks jobs list --name lakebase-fleet-autoscaler -o json | jq -e '.[0]' >/dev/null 2>&1; then
-            echo "first_deploy=false" >> $GITHUB_OUTPUT
-          else
-            echo "first_deploy=true"  >> $GITHUB_OUTPUT
-          fi
-
-      - name: Pre-deploy SHRINK (skip on first deploy)
-        if: steps.detect.outputs.first_deploy == 'false'
-        run: |
-          databricks bundle run autoscaler -t dev \
-            --params "mode=shrink,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}"
+          echo "Extracted: real_names=$REAL_NAMES, quota=$QUOTA, headroom=$HEADROOM"
 
       - name: Deploy bundle
         run: databricks bundle deploy -t dev
 
-      - name: Post-deploy FILL
-        run: |
-          databricks bundle run autoscaler -t dev \
-            --params "mode=fill,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}"
-
-      - name: Verify final state
+      - name: Reconcile fleet
         run: |
           databricks bundle run autoscaler -t dev \
             --params "mode=reconcile,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}"
