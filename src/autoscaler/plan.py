@@ -155,7 +155,6 @@ logger.info("Plan: delete %d instances, create %d placeholders", len(delete_name
 # Emit task values for downstream tasks
 
 delete_value = "|".join(delete_names) if delete_names else "__NONE__"
-create_value = "|".join(create_names) if create_names else "__NONE__"
 
 summary = {
     "quota": quota,
@@ -168,9 +167,8 @@ summary = {
 }
 
 dbutils.jobs.taskValues.set(key="delete_names", value=delete_value)
-dbutils.jobs.taskValues.set(key="create_names", value=create_value)
 dbutils.jobs.taskValues.set(key="summary", value=summary)
 
 logger.info("Task values set — summary: %s", json.dumps(summary, indent=2))
 logger.info("delete_names: %s", delete_value[:200])
-logger.info("create_names: %s", create_value[:200])
+logger.info("to_create: %d names (computed by fill task)", len(create_names))

@@ -97,6 +97,8 @@ resources:
 
         # ── Step 3: Fill ──────────────────────────────────────────────────────
         # Creates all placeholders in a single task using ThreadPoolExecutor.
+        # Self-contained: lists projects and computes what to create (avoids
+        # the 10K char limit on task value references).
         - task_key: fill
           depends_on:
             - task_key: cleanup
@@ -106,8 +108,8 @@ resources:
             parameters:
               - "--mode"
               - "batch_create"
-              - "--create-names"
-              - "{{tasks.plan.values.create_names}}"
+              - "--quota"
+              - "{{job.parameters.quota}}"
 
       environments:
         - environment_key: default

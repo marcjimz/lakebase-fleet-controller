@@ -355,22 +355,48 @@ def _create_one_with_retry(client: LakebaseClient, name: str, max_retries: int =
     return False
 
 
-def batch_create(client: LakebaseClient, create_names_raw: str) -> int:
-    """Create placeholders concurrently using ThreadPoolExecutor.
+def batch_create(client: LakebaseClient, quota: int) -> int:
+    """Create missing placeholders concurrently using ThreadPoolExecutor.
 
-    Receives a pipe-separated list of names. Each thread creates one project
-    and then enables scale-to-zero on its endpoints.
+    Self-contained: lists all projects, computes which placeholders are
+    needed, then creates them with 50 threads. This avoids passing large
+    name lists through task values (which have a 10K char reference limit).
     """
-    if create_names_raw == "__NONE__":
-        logger.info("batch_create: nothing to create (sentinel __NONE__)")
+    all_projects = client.list_all_projects()
+    placeholders = [p for p in all_projects if p.get_tag("owner") == OWNER_PLACEHOLDER]
+    real_count = sum(1 for p in all_projects if p.get_tag("owner") == OWNER_DAB)
+    target_placeholders = quota - real_count
+
+    if target_placeholders < 0:
+        raise ValueError(f"Real ({real_count}) exceeds quota ({quota})")
+
+    need_to_create = target_placeholders - len(placeholders)
+    if need_to_create <= 0:
+        logger.info("batch_create: no-op (%d placeholders >= target %d)", len(placeholders), target_placeholders)
         return 0
 
-    names = [n.strip() for n in create_names_raw.split("|") if n.strip()]
-    if not names:
-        logger.info("batch_create: empty name list, nothing to do")
-        return 0
+    # Find existing indices to avoid collisions
+    existing_indices: set[int] = set()
+    for p in placeholders:
+        if p.name.startswith("fleet-placeholder-"):
+            try:
+                existing_indices.add(int(p.name.split("-")[-1]))
+            except ValueError:
+                pass
 
-    logger.info("batch_create: creating %d placeholders with 50 threads", len(names))
+    # Generate names for missing slots
+    names: list[str] = []
+    idx = 0
+    for _ in range(need_to_create):
+        while idx in existing_indices:
+            idx += 1
+        names.append(f"fleet-placeholder-{idx:04d}")
+        existing_indices.add(idx)
+        idx += 1
+
+    logger.info("batch_create: creating %d placeholders with 50 threads (quota=%d, real=%d, existing_ph=%d)",
+                len(names), quota, real_count, len(placeholders))
+
     created = 0
     failed = 0
 
@@ -444,8 +470,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--quota", type=int, default=1000)
     # cleanup_batch args
     parser.add_argument("--delete-names", default="__NONE__", help="Pipe-separated names to delete")
-    # batch_create args
-    parser.add_argument("--create-names", default="__NONE__", help="Pipe-separated names to create")
     return parser.parse_args(argv)
 
 
@@ -459,7 +483,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.mode == "cleanup_batch":
         cleanup_batch(client, args.delete_names)
     elif args.mode == "batch_create":
-        batch_create(client, args.create_names)
+        batch_create(client, args.quota)
     elif args.mode == "enable_scale_to_zero":
         enable_scale_to_zero(client)
     else:
