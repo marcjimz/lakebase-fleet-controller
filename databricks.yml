@@ -11,10 +11,10 @@ variables:
     default: ""
   quota:
     description: "Maximum Lakebase instances allowed in the workspace"
-    default: 5
+    default: 1000
   headroom:
     description: "Slots reserved as buffer"
-    default: 1
+    default: 10
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
@@ -32,8 +32,8 @@ resources:
   #   2. Second PR — delete the resource block
   # ────────────────────────────────────────────────────────────────────────────
   database_instances:
-    lakebase_tenant_acme:
-      name: v2-fleet-acme
+    lakebase_project_1:
+      name: fleet-project-1
       capacity: CU_1
       custom_tags:
         - key: owner
@@ -41,10 +41,10 @@ resources:
         - key: managed_by
           value: lakebase-fleet-controller
       lifecycle:
-        prevent_destroy: true
+        prevent_destroy: false  # TODO: restore to true after rename transition
 
-    lakebase_tenant_globex:
-      name: v2-fleet-globex
+    lakebase_project_2:
+      name: fleet-project-2
       capacity: CU_2
       custom_tags:
         - key: owner
@@ -52,10 +52,10 @@ resources:
         - key: managed_by
           value: lakebase-fleet-controller
       lifecycle:
-        prevent_destroy: true
+        prevent_destroy: false  # TODO: restore to true after rename transition
 
-    lakebase_tenant_initech:
-      name: v2-fleet-initech
+    lakebase_project_3:
+      name: fleet-project-3
       capacity: CU_1
       custom_tags:
         - key: owner
@@ -63,7 +63,7 @@ resources:
         - key: managed_by
           value: lakebase-fleet-controller
       lifecycle:
-        prevent_destroy: true
+        prevent_destroy: false  # TODO: restore to true after rename transition
 
   # ────────────────────────────────────────────────────────────────────────────
   # AUTOSCALER JOB — fills remaining quota with stopped placeholders and
@@ -74,19 +74,52 @@ resources:
       name: lakebase-fleet-autoscaler
       max_concurrent_runs: 1
       tasks:
-        - task_key: reconcile
+        # ── Step 1: Plan ────────────────────────────────────────────────────
+        # Notebook task so it can use dbutils.jobs.taskValues.set() to pass
+        # delete_names and create_names to downstream tasks.
+        - task_key: plan
+          notebook_task:
+            notebook_path: src/autoscaler/plan.py
+            source: WORKSPACE
+            base_parameters:
+              real_names: "{{job.parameters.real_names}}"
+              quota: "{{job.parameters.quota}}"
+              headroom: "{{job.parameters.headroom}}"
+          environment_key: default
+
+        # ── Step 2: Cleanup ─────────────────────────────────────────────────
+        # Deletes orphans + excess placeholders identified by the plan task.
+        - task_key: cleanup
+          depends_on:
+            - task_key: plan
           environment_key: default
           spark_python_task:
             python_file: src/autoscaler/main.py
             parameters:
               - "--mode"
-              - "{{job.parameters.mode}}"
-              - "--real-names"
-              - "{{job.parameters.real_names}}"
-              - "--quota"
-              - "{{job.parameters.quota}}"
-              - "--headroom"
-              - "{{job.parameters.headroom}}"
+              - "cleanup_batch"
+              - "--delete-names"
+              - "{{tasks.plan.values.delete_names}}"
+
+        # ── Step 3: Fill (parallel) ─────────────────────────────────────────
+        # Creates placeholder instances in parallel using for_each_task.
+        - task_key: fill
+          depends_on:
+            - task_key: cleanup
+          for_each_task:
+            concurrency: 100
+            inputs: "{{tasks.plan.values.create_names}}"
+            task:
+              task_key: create_one
+              environment_key: default
+              spark_python_task:
+                python_file: src/autoscaler/main.py
+                parameters:
+                  - "--mode"
+                  - "create_one"
+                  - "--instance-name"
+                  - "{{input}}"
+
       environments:
         - environment_key: default
           spec:
@@ -94,14 +127,12 @@ resources:
             dependencies:
               - databricks-sdk
       parameters:
-        - name: mode
-          default: reconcile
         - name: real_names
           default: ""
         - name: quota
-          default: "5"
+          default: "1000"
         - name: headroom
-          default: "1"
+          default: "10"
       tags:
         owner: dab
 

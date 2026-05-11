@@ -168,9 +168,9 @@ def fill_placeholders(client: LakebaseClient, target: int) -> int:
 
     existing_indices: set[int] = set()
     for inst in placeholders:
-        if inst.name.startswith("placeholder-"):
+        if inst.name.startswith("fleet-placeholder-"):
             try:
-                existing_indices.add(int(inst.name.split("-", 1)[1]))
+                existing_indices.add(int(inst.name.split("-")[-1]))
             except ValueError:
                 pass
 
@@ -179,7 +179,7 @@ def fill_placeholders(client: LakebaseClient, target: int) -> int:
     while current + created < target:
         while idx in existing_indices:
             idx += 1
-        name = f"placeholder-{idx:04d}"
+        name = f"fleet-placeholder-{idx:04d}"
         logger.info("Fill: creating %s then stopping", name)
         client.create_instance({
             "name": name,
@@ -221,45 +221,112 @@ def reconcile(client: LakebaseClient, known_real_names: set[str], quota: int, he
     }
 
 
+# ── DAG task modes ───────────────────────────────────────────────────────────
+
+def cleanup_batch(client: LakebaseClient, delete_names_raw: str) -> int:
+    """Delete a pipe-separated list of instances. Skips __NONE__ sentinel and 404s."""
+    if delete_names_raw == "__NONE__":
+        logger.info("cleanup_batch: nothing to delete (sentinel __NONE__)")
+        return 0
+
+    names = [n.strip() for n in delete_names_raw.split("|") if n.strip()]
+    deleted = 0
+    for name in names:
+        # Safety: refuse to delete DAB-owned instances
+        try:
+            resp = client.get_instance(name)
+        except Exception as exc:
+            if "404" in str(exc) or "NOT_FOUND" in str(exc):
+                logger.info("cleanup_batch: %s already gone (404), skipping", name)
+                continue
+            raise
+        tags = resp.get("effective_custom_tags") or resp.get("custom_tags") or []
+        owner = _get_tag(tags, "owner")
+        if owner == OWNER_DAB:
+            raise RuntimeError(f"REFUSING to delete DAB-managed instance: {name}")
+        logger.info("cleanup_batch: deleting %s (owner=%s)", name, owner)
+        client.delete_instance(name)
+        deleted += 1
+
+    logger.info("cleanup_batch: deleted %d instances", deleted)
+    return deleted
+
+
+def create_one(client: LakebaseClient, instance_name: str) -> None:
+    """Create a single placeholder instance, wait for AVAILABLE, then stop it."""
+    if instance_name == "__SKIP__":
+        logger.info("create_one: nothing to create (sentinel __SKIP__)")
+        return
+
+    logger.info("create_one: creating %s", instance_name)
+    client.create_instance({
+        "name": instance_name,
+        "capacity": "CU_1",
+        "custom_tags": [
+            {"key": "owner", "value": OWNER_PLACEHOLDER},
+            {"key": "managed_by", "value": "autoscaler"},
+        ],
+    })
+    client.wait_for_state(instance_name, "AVAILABLE")
+    client.stop_instance(instance_name)
+    logger.info("create_one: %s created and stopped", instance_name)
+
+
 # ── CLI entry point ──────────────────────────────────────────────────────────
+
+MODES = ["shrink", "fill", "reconcile", "cleanup_orphans", "cleanup_batch", "create_one"]
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Lakebase Fleet Autoscaler")
-    parser.add_argument("--mode", choices=["shrink", "fill", "reconcile", "cleanup_orphans"], default="reconcile")
-    parser.add_argument("--real-names", required=True, help="Pipe-separated instance names (a|b|c)")
+    parser.add_argument("--mode", choices=MODES, default="reconcile")
+    parser.add_argument("--real-names", default="", help="Pipe-separated instance names (a|b|c)")
     parser.add_argument("--quota", type=int, default=1000)
     parser.add_argument("--headroom", type=int, default=10)
+    # cleanup_batch args
+    parser.add_argument("--delete-names", default="__NONE__", help="Pipe-separated names to delete")
+    # create_one args
+    parser.add_argument("--instance-name", default="__SKIP__", help="Single instance name to create")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    known_real_names = {n.strip() for n in args.real_names.split("|") if n.strip()}
-    quota = args.quota
-    headroom = args.headroom
-    target_placeholders = quota - len(known_real_names) - headroom
 
-    if target_placeholders < 0:
-        logger.error("Real (%d) + headroom (%d) exceeds quota (%d)", len(known_real_names), headroom, quota)
-        sys.exit(1)
-
-    logger.info("Mode=%s | quota=%d | real=%d | headroom=%d | target_ph=%d",
-                args.mode, quota, len(known_real_names), headroom, target_placeholders)
-    logger.info("Real names: %s", known_real_names)
+    logger.info("Mode=%s", args.mode)
 
     client = LakebaseClient()
 
-    if args.mode == "cleanup_orphans":
-        cleanup_orphans(client, known_real_names)
-    elif args.mode == "shrink":
-        cleanup_orphans(client, known_real_names)
-        shrink_placeholders(client, target_placeholders)
-    elif args.mode == "fill":
-        cleanup_orphans(client, known_real_names)
-        fill_placeholders(client, target_placeholders)
-    elif args.mode == "reconcile":
-        result = reconcile(client, known_real_names, quota, headroom)
-        logger.info("Result: %s", json.dumps(result, indent=2))
+    if args.mode == "cleanup_batch":
+        cleanup_batch(client, args.delete_names)
+    elif args.mode == "create_one":
+        create_one(client, args.instance_name)
+    else:
+        # Legacy modes that require real-names / quota / headroom
+        known_real_names = {n.strip() for n in args.real_names.split("|") if n.strip()}
+        quota = args.quota
+        headroom = args.headroom
+        target_placeholders = quota - len(known_real_names) - headroom
+
+        if target_placeholders < 0:
+            logger.error("Real (%d) + headroom (%d) exceeds quota (%d)", len(known_real_names), headroom, quota)
+            sys.exit(1)
+
+        logger.info("quota=%d | real=%d | headroom=%d | target_ph=%d",
+                    quota, len(known_real_names), headroom, target_placeholders)
+        logger.info("Real names: %s", known_real_names)
+
+        if args.mode == "cleanup_orphans":
+            cleanup_orphans(client, known_real_names)
+        elif args.mode == "shrink":
+            cleanup_orphans(client, known_real_names)
+            shrink_placeholders(client, target_placeholders)
+        elif args.mode == "fill":
+            cleanup_orphans(client, known_real_names)
+            fill_placeholders(client, target_placeholders)
+        elif args.mode == "reconcile":
+            result = reconcile(client, known_real_names, quota, headroom)
+            logger.info("Result: %s", json.dumps(result, indent=2))
 
     logger.info("Done.")
 
