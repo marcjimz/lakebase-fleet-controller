@@ -198,12 +198,12 @@ def fill_placeholders(client: LakebaseClient, target: int) -> int:
     return created
 
 
-def reconcile(client: LakebaseClient, known_real_names: set[str], quota: int, headroom: int) -> dict:
+def reconcile(client: LakebaseClient, known_real_names: set[str], quota: int) -> dict:
     target_real = len(known_real_names)
-    target_placeholders = quota - target_real - headroom
+    target_placeholders = quota - target_real
     if target_placeholders < 0:
         raise ValueError(
-            f"Real ({target_real}) + headroom ({headroom}) exceeds quota ({quota})"
+            f"Real ({target_real}) exceeds quota ({quota})"
         )
     orphans = cleanup_orphans(client, known_real_names)
     shrunk = shrink_placeholders(client, target_placeholders)
@@ -212,7 +212,6 @@ def reconcile(client: LakebaseClient, known_real_names: set[str], quota: int, he
         "target_real": target_real,
         "target_placeholders": target_placeholders,
         "quota": quota,
-        "headroom": headroom,
         "orphans_deleted": orphans,
         "placeholders_shrunk": shrunk,
         "placeholders_filled": filled,
@@ -302,7 +301,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mode", choices=MODES, default="reconcile")
     parser.add_argument("--real-names", default="", help="Pipe-separated instance names (a|b|c)")
     parser.add_argument("--quota", type=int, default=1000)
-    parser.add_argument("--headroom", type=int, default=10)
     # cleanup_batch args
     parser.add_argument("--delete-names", default="__NONE__", help="Pipe-separated names to delete")
     # create_one args
@@ -322,18 +320,17 @@ def main(argv: list[str] | None = None) -> None:
     elif args.mode == "create_one":
         create_one(client, args.instance_name)
     else:
-        # Legacy modes that require real-names / quota / headroom
+        # Legacy modes that require real-names / quota
         known_real_names = {n.strip() for n in args.real_names.split("|") if n.strip()}
         quota = args.quota
-        headroom = args.headroom
-        target_placeholders = quota - len(known_real_names) - headroom
+        target_placeholders = quota - len(known_real_names)
 
         if target_placeholders < 0:
-            logger.error("Real (%d) + headroom (%d) exceeds quota (%d)", len(known_real_names), headroom, quota)
+            logger.error("Real (%d) exceeds quota (%d)", len(known_real_names), quota)
             sys.exit(1)
 
-        logger.info("quota=%d | real=%d | headroom=%d | target_ph=%d",
-                    quota, len(known_real_names), headroom, target_placeholders)
+        logger.info("quota=%d | real=%d | target_ph=%d",
+                    quota, len(known_real_names), target_placeholders)
         logger.info("Real names: %s", known_real_names)
 
         if args.mode == "cleanup_orphans":
@@ -345,7 +342,7 @@ def main(argv: list[str] | None = None) -> None:
             cleanup_orphans(client, known_real_names)
             fill_placeholders(client, target_placeholders)
         elif args.mode == "reconcile":
-            result = reconcile(client, known_real_names, quota, headroom)
+            result = reconcile(client, known_real_names, quota)
             logger.info("Result: %s", json.dumps(result, indent=2))
 
     logger.info("Done.")

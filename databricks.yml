@@ -12,9 +12,6 @@ variables:
   quota:
     description: "Maximum Lakebase instances allowed in the workspace"
     default: 1000
-  headroom:
-    description: "Slots reserved as buffer"
-    default: 10
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
@@ -82,7 +79,6 @@ resources:
             base_parameters:
               real_names: "{{job.parameters.real_names}}"
               quota: "{{job.parameters.quota}}"
-              headroom: "{{job.parameters.headroom}}"
           environment_key: default
 
         # ── Step 2: Cleanup ─────────────────────────────────────────────────
@@ -133,8 +129,6 @@ resources:
           default: "fleet-proj-1|fleet-proj-2|fleet-proj-3"
         - name: quota
           default: "${var.quota}"
-        - name: headroom
-          default: "${var.headroom}"
       tags:
         owner: dab
 

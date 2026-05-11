@@ -28,15 +28,13 @@ _PROJECTS_API = "/api/2.0/postgres/projects"
 # Read parameters from notebook widgets
 dbutils.widgets.text("real_names", "", "Real instance names (pipe-separated)")
 dbutils.widgets.text("quota", "1000", "Workspace quota")
-dbutils.widgets.text("headroom", "10", "Reserved headroom slots")
 
 raw_real_names = dbutils.widgets.get("real_names")
 quota = int(dbutils.widgets.get("quota"))
-headroom = int(dbutils.widgets.get("headroom"))
 
 known_real_names = {n.strip() for n in raw_real_names.split("|") if n.strip()}
 
-logger.info("Plan inputs: real_names=%s, quota=%d, headroom=%d", known_real_names, quota, headroom)
+logger.info("Plan inputs: real_names=%s, quota=%d", known_real_names, quota)
 
 # COMMAND ----------
 
@@ -107,10 +105,10 @@ logger.info(
 
 # Compute target placeholder count and what to create/delete
 
-target_placeholders = quota - len(known_real_names) - headroom
+target_placeholders = quota - len(known_real_names)
 if target_placeholders < 0:
     raise ValueError(
-        f"Real ({len(known_real_names)}) + headroom ({headroom}) exceeds quota ({quota})"
+        f"Real ({len(known_real_names)}) exceeds quota ({quota})"
     )
 
 current_placeholder_count = len(placeholders)
@@ -163,7 +161,6 @@ create_value = create_names if create_names else ["__SKIP__"]
 
 summary = {
     "quota": quota,
-    "headroom": headroom,
     "real_count": len(known_real_names),
     "target_placeholders": target_placeholders,
     "current_placeholders": current_placeholder_count,

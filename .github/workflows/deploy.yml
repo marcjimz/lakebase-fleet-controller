@@ -41,12 +41,10 @@ jobs:
           REAL_NAMES=$(echo "$BUNDLE" | jq -r '[.resources.postgres_projects // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab") | .value.project_id] | join("|")')
           REAL_COUNT=$(echo "$BUNDLE" | jq '[.resources.postgres_projects // {} | to_entries[] | select(.value.custom_tags[]? | .key == "owner" and .value == "dab")] | length')
           QUOTA=$(echo "$BUNDLE" | jq -r '.variables.quota.value // 1000')
-          HEADROOM=$(echo "$BUNDLE" | jq -r '.variables.headroom.value // 10')
           echo "real_names=$REAL_NAMES"   >> $GITHUB_OUTPUT
           echo "real_count=$REAL_COUNT"   >> $GITHUB_OUTPUT
           echo "quota=$QUOTA"             >> $GITHUB_OUTPUT
-          echo "headroom=$HEADROOM"       >> $GITHUB_OUTPUT
-          echo "Extracted: real_names=$REAL_NAMES, real_count=$REAL_COUNT, quota=$QUOTA, headroom=$HEADROOM"
+          echo "Extracted: real_names=$REAL_NAMES, real_count=$REAL_COUNT, quota=$QUOTA"
 
       - name: Pre-deploy reconciliation (cleanup orphans + free slots)
         run: bash scripts/pre_deploy_shrink.sh "${{ steps.targets.outputs.real_names }}" "${{ steps.targets.outputs.real_count }}"
@@ -57,7 +55,7 @@ jobs:
       - name: Reconcile fleet
         run: |
           databricks bundle run autoscaler -t dev \
-            --params "real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}"
+            --params "real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }}"
 
   # ───────────────────────────────────────────────────────────────────────────
   # QA — uncomment to enable. Requires a "QA" GitHub environment.
