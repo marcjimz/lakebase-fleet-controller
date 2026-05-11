@@ -157,7 +157,9 @@ logger.info("Plan: delete %d instances, create %d placeholders", len(delete_name
 # Emit task values for downstream tasks
 
 delete_value = "|".join(delete_names) if delete_names else "__NONE__"
-create_value = json.dumps(create_names) if create_names else '["__SKIP__"]'
+# Pass list directly — dbutils.jobs.taskValues.set() serializes to JSON.
+# Using json.dumps() first would double-encode (string of a JSON array).
+create_value = create_names if create_names else ["__SKIP__"]
 
 summary = {
     "quota": quota,
@@ -172,8 +174,8 @@ summary = {
 
 dbutils.jobs.taskValues.set(key="delete_names", value=delete_value)
 dbutils.jobs.taskValues.set(key="create_names", value=create_value)
-dbutils.jobs.taskValues.set(key="summary", value=json.dumps(summary))
+dbutils.jobs.taskValues.set(key="summary", value=summary)
 
 logger.info("Task values set — summary: %s", json.dumps(summary, indent=2))
-logger.info("delete_names (%d chars): %s", len(delete_value), delete_value[:200])
-logger.info("create_names (%d chars): %s", len(create_value), create_value[:200])
+logger.info("delete_names: %s", delete_value[:200])
+logger.info("create_names (%d items): %s", len(create_value), str(create_value)[:200])
