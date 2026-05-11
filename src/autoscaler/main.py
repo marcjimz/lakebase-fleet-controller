@@ -132,8 +132,15 @@ def cleanup_orphans(client: LakebaseClient, known_real_names: set[str]) -> int:
             continue
         logger.warning("Deleting orphan: %s (owner=%s)", inst.name, owner)
         _assert_not_dab_owned(inst, "delete orphan")
-        client.delete_project(inst.name)
-        deleted += 1
+        try:
+            client.delete_project(inst.name)
+            deleted += 1
+        except Exception as exc:
+            err = str(exc)
+            if "protected branches" in err or "FAILED_PRECONDITION" in err:
+                logger.warning("Skipping %s: has protected branches (manual cleanup needed)", inst.name)
+            else:
+                raise
     if deleted:
         logger.info("Orphan cleanup: deleted %d", deleted)
     return deleted
@@ -233,8 +240,18 @@ def cleanup_batch(client: LakebaseClient, delete_names_raw: str) -> int:
         if owner == OWNER_DAB:
             raise RuntimeError(f"REFUSING to delete DAB-managed project: {name}")
         logger.info("cleanup_batch: deleting %s (owner=%s)", name, owner)
-        client.delete_project(name)
-        deleted += 1
+        try:
+            client.delete_project(name)
+            deleted += 1
+        except Exception as exc:
+            err = str(exc)
+            if "protected branches" in err or "FAILED_PRECONDITION" in err:
+                logger.warning("cleanup_batch: %s has protected branches, skipping (manual cleanup needed)", name)
+                continue
+            if "404" in err or "NOT_FOUND" in err:
+                logger.info("cleanup_batch: %s already gone, skipping", name)
+                continue
+            raise
 
     logger.info("cleanup_batch: deleted %d instances", deleted)
     return deleted
