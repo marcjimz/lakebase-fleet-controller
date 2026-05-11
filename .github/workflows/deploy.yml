@@ -60,7 +60,7 @@ jobs:
         if: steps.detect.outputs.first_deploy == 'false'
         run: |
           databricks bundle run autoscaler -t dev \
-            --params mode=shrink,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+            --params "mode=shrink,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}"
 
       - name: Deploy bundle
         run: databricks bundle deploy -t dev
@@ -68,12 +68,12 @@ jobs:
       - name: Post-deploy FILL
         run: |
           databricks bundle run autoscaler -t dev \
-            --params mode=fill,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+            --params "mode=fill,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}"
 
       - name: Verify final state
         run: |
           databricks bundle run autoscaler -t dev \
-            --params mode=reconcile,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}
+            --params "mode=reconcile,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }},headroom=${{ steps.targets.outputs.headroom }}"
 
   # ───────────────────────────────────────────────────────────────────────────
   # QA — uncomment to enable. Requires a "QA" GitHub environment.
