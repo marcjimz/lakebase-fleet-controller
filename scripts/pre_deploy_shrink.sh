@@ -17,7 +17,7 @@
 # Requires: databricks CLI authenticated (DATABRICKS_HOST + credentials)
 set -euo pipefail
 
-REAL_NAMES="${1:?Usage: pre_deploy_shrink.sh <real_names> <real_count>}"
+REAL_NAMES="${1-}"
 REAL_COUNT="${2:?Usage: pre_deploy_shrink.sh <real_names> <real_count>}"
 PROJECTS_API="/api/2.0/postgres/projects"
 OWNER_DAB="dab"
