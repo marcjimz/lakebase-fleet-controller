@@ -108,76 +108,6 @@ class LakebaseClient:
         resp = self.get_project(project_id)
         return resp.get("status", {}).get("custom_tags") or []
 
-    # ── Endpoint management (scale-to-zero) ──────────────────────────────
-
-    def list_branches(self, project_id: str) -> list[dict]:
-        """List all branches for a project."""
-        resp = self._ws.api_client.do(
-            "GET", f"{_PROJECTS_API}/{project_id}/branches"
-        )
-        return resp.get("branches", [])
-
-    def list_endpoints(self, project_id: str, branch: str) -> list[dict]:
-        """List all endpoints for a project branch."""
-        resp = self._ws.api_client.do(
-            "GET", f"{_PROJECTS_API}/{project_id}/branches/{branch}/endpoints"
-        )
-        return resp.get("endpoints", [])
-
-    def enable_suspension(self, project_id: str, branch: str, endpoint_id: str) -> dict:
-        """Enable scale-to-zero on a specific endpoint (suspend after 60s idle)."""
-        return self._ws.api_client.do(
-            "PATCH",
-            f"{_PROJECTS_API}/{project_id}/branches/{branch}/endpoints/{endpoint_id}",
-            body={
-                "endpoint": {
-                    "spec": {
-                        "no_suspension": False,
-                        "suspend_timeout_duration": "60s",
-                    }
-                },
-                "update_mask": "spec.no_suspension,spec.suspend_timeout_duration",
-            },
-        )
-
-    def enable_scale_to_zero_for_project(self, project_id: str, max_retries: int = 6) -> None:
-        """Discover branches/endpoints and enable suspension on each.
-
-        Retries endpoint discovery because new projects may not have
-        endpoints available immediately after creation.
-        """
-        for attempt in range(1, max_retries + 1):
-            branches = self.list_branches(project_id)
-            if branches:
-                break
-            if attempt == max_retries:
-                logger.warning("scale-to-zero: %s has no branches after %d attempts, skipping", project_id, max_retries)
-                return
-            time.sleep(2)
-
-        for branch_obj in branches:
-            branch_name = branch_obj.get("branch_id") or branch_obj.get("name", "").split("/")[-1]
-            if not branch_name:
-                continue
-
-            for attempt in range(1, max_retries + 1):
-                endpoints = self.list_endpoints(project_id, branch_name)
-                if endpoints:
-                    break
-                if attempt == max_retries:
-                    logger.warning("scale-to-zero: %s/%s has no endpoints after %d attempts, skipping",
-                                   project_id, branch_name, max_retries)
-                    break
-                time.sleep(2)
-            else:
-                continue
-
-            for ep in endpoints:
-                ep_id = ep.get("endpoint_id") or ep.get("name", "").split("/")[-1]
-                if not ep_id:
-                    continue
-                logger.info("scale-to-zero: enabling suspension on %s/%s/%s", project_id, branch_name, ep_id)
-                self.enable_suspension(project_id, branch_name, ep_id)
 
 
 # ── DAG task modes ───────────────────────────────────────────────────────────
@@ -245,14 +175,11 @@ def _create_one_with_retry(client: LakebaseClient, name: str, max_retries: int =
 
 
 def batch_create(client: LakebaseClient, quota: int, slice_num: str, total_slices: int) -> int:
-    """Create missing placeholders for a single slice using two-phase processing.
+    """Create missing placeholders for a single slice.
 
     Self-contained: lists all projects, computes the full deterministic list
     of needed placeholder names, then takes its partition (index % total_slices == slice_num).
-
-    Phase 1: Create all projects in the partition (fast, ~2s each)
-    Phase 2: Enable scale-to-zero on all created projects (endpoints have
-             had time to provision during phase 1)
+    Scale-to-zero is the platform default — no post-creation PATCH needed.
     """
     if slice_num == "__SKIP__":
         logger.info("batch_create: skipping (sentinel __SKIP__)")
@@ -322,75 +249,15 @@ def batch_create(client: LakebaseClient, quota: int, slice_num: str, total_slice
                 logger.info("batch_create[%d]: phase1 progress %d/%d (created=%d, failed=%d)",
                             my_slice, i, len(my_names), len(created_names), create_failed)
 
-    logger.info("batch_create[%d]: phase1 done — created=%d, failed=%d", my_slice, len(created_names), create_failed)
-
-    # ── Phase 2: Enable scale-to-zero on all created projects ─────────────
-    if created_names:
-        s2z_ok = 0
-        s2z_failed = 0
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-            future_to_name = {
-                executor.submit(client.enable_scale_to_zero_for_project, name): name
-                for name in created_names
-            }
-            for i, future in enumerate(concurrent.futures.as_completed(future_to_name), 1):
-                name = future_to_name[future]
-                try:
-                    future.result()
-                    s2z_ok += 1
-                except Exception as exc:
-                    s2z_failed += 1
-                    logger.error("batch_create[%d]: s2z %s failed: %s", my_slice, name, str(exc)[:200])
-                if i % 50 == 0 or i == len(created_names):
-                    logger.info("batch_create[%d]: phase2 progress %d/%d (ok=%d, failed=%d)",
-                                my_slice, i, len(created_names), s2z_ok, s2z_failed)
-
-        logger.info("batch_create[%d]: phase2 done — s2z_ok=%d, s2z_failed=%d", my_slice, s2z_ok, s2z_failed)
-
-    logger.info("batch_create[%d]: done — created=%d, create_failed=%d", my_slice, len(created_names), create_failed)
+    logger.info("batch_create[%d]: done — created=%d, failed=%d", my_slice, len(created_names), create_failed)
     if create_failed:
         raise RuntimeError(f"batch_create[{my_slice}]: {create_failed}/{len(my_names)} projects failed to create")
     return len(created_names)
 
 
-def enable_scale_to_zero(client: LakebaseClient) -> int:
-    """One-time migration: enable scale-to-zero on all existing placeholders."""
-    all_projects = client.list_all_projects()
-    placeholders = [p for p in all_projects if p.get_tag("owner") == OWNER_PLACEHOLDER]
-
-    if not placeholders:
-        logger.info("enable_scale_to_zero: no placeholders found")
-        return 0
-
-    logger.info("enable_scale_to_zero: updating %d placeholders with 50 threads", len(placeholders))
-    updated = 0
-    failed = 0
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-        future_to_name = {
-            executor.submit(client.enable_scale_to_zero_for_project, p.name): p.name
-            for p in placeholders
-        }
-        for i, future in enumerate(concurrent.futures.as_completed(future_to_name), 1):
-            name = future_to_name[future]
-            try:
-                future.result()
-                updated += 1
-            except Exception as exc:
-                failed += 1
-                logger.error("enable_scale_to_zero: %s failed: %s", name, str(exc)[:200])
-            if i % 50 == 0 or i == len(placeholders):
-                logger.info("enable_scale_to_zero: progress %d/%d (updated=%d, failed=%d)",
-                            i, len(placeholders), updated, failed)
-
-    logger.info("enable_scale_to_zero: done — updated=%d, failed=%d", updated, failed)
-    return updated
-
-
 # ── CLI entry point ──────────────────────────────────────────────────────────
 
-MODES = ["cleanup_batch", "batch_create", "enable_scale_to_zero"]
+MODES = ["cleanup_batch", "batch_create"]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -414,8 +281,6 @@ def main(argv: list[str] | None = None) -> None:
         cleanup_batch(client, args.delete_names)
     elif args.mode == "batch_create":
         batch_create(client, args.quota, args.slice, args.total_slices)
-    elif args.mode == "enable_scale_to_zero":
-        enable_scale_to_zero(client)
 
     logger.info("Done.")
 
