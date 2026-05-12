@@ -131,11 +131,16 @@ target_placeholders = quota - len(known_real_names)
 if target_placeholders < 0:
     raise ValueError(f"Real ({len(known_real_names)}) exceeds quota ({quota})")
 
-if placeholders_enabled and len(placeholders) > target_placeholders:
+if not placeholders_enabled:
+    # Placeholders disabled — delete ALL existing placeholders
+    delete_names.extend(inst["name"] for inst in placeholders)
+    logger.info("Placeholders disabled — marking all %d for deletion", len(placeholders))
+    placeholders = []
+elif len(placeholders) > target_placeholders:
+    # Trim excess placeholders
     placeholders.sort(key=lambda i: i["creation_time"])
     excess = len(placeholders) - target_placeholders
     delete_names.extend(inst["name"] for inst in placeholders[:excess])
-    # Remove excess from placeholders list so fill logic sees accurate count
     placeholders = placeholders[excess:]
 
 deleted = 0

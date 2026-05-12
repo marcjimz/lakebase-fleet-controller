@@ -17,7 +17,7 @@ variables:
     default: "true"
   placeholders:
     description: "Fill remaining quota with placeholder projects"
-    default: "true"
+    default: "false"
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
