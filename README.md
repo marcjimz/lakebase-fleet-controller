@@ -36,12 +36,20 @@ databricks api post /api/2.0/accounts/servicePrincipals/<SP_ID>/credentials/secr
 
 # Note the secret from the output — this is your SP_CLIENT_SECRET
 
-# Add the SP to the admins group (get the group ID first)
+# Add the SP to the admins group
+# Option A: SCIM API (non-AIM workspaces)
 databricks groups list -o json  # find the admins group ID
 databricks api patch /api/2.0/preview/scim/v2/Groups/<ADMINS_GROUP_ID> --json '{
   "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
   "Operations": [{"op": "add", "path": "members", "value": [{"value": "<SP_ID>"}]}]
 }'
+
+# Option B: Account-level AIM (Azure / AIM-enrolled workspaces)
+# databricks account groups list --profile ACCOUNT -o json  # find the admins group ID
+# databricks account groups patch <ADMINS_GROUP_ID> --profile ACCOUNT --json '{
+#   "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+#   "Operations": [{"op": "add", "path": "members", "value": [{"value": "<SP_ID>"}]}]
+# }'
 ```
 
 ### 2. Create a GitHub environment
