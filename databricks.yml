@@ -12,6 +12,12 @@ variables:
   quota:
     description: "Maximum Lakebase instances allowed in the workspace"
     default: 1000
+  enabled:
+    description: "Enable autoscaler (cleanup orphans)"
+    default: "true"
+  placeholders:
+    description: "Fill remaining quota with placeholder projects"
+    default: "true"
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
@@ -79,6 +85,8 @@ resources:
             base_parameters:
               real_names: "{{job.parameters.real_names}}"
               quota: "{{job.parameters.quota}}"
+              enabled: "{{job.parameters.enabled}}"
+              placeholders: "{{job.parameters.placeholders}}"
           environment_key: default
 
         # ── Step 2: Cleanup ─────────────────────────────────────────────────
@@ -96,20 +104,29 @@ resources:
               - "{{tasks.plan.values.delete_names}}"
 
         # ── Step 3: Fill ──────────────────────────────────────────────────────
-        # Creates all placeholders in a single task using ThreadPoolExecutor.
-        # Self-contained: lists projects and computes what to create (avoids
-        # the 10K char limit on task value references).
+        # Creates placeholders across 10 parallel slices with for_each_task.
+        # Each slice lists projects, takes its partition, then does two-phase
+        # processing: create all projects, then enable scale-to-zero.
         - task_key: fill
           depends_on:
             - task_key: cleanup
-          environment_key: default
-          spark_python_task:
-            python_file: src/autoscaler/main.py
-            parameters:
-              - "--mode"
-              - "batch_create"
-              - "--quota"
-              - "{{job.parameters.quota}}"
+          for_each_task:
+            concurrency: 10
+            inputs: "{{tasks.plan.values.fill_slices}}"
+            task:
+              task_key: fill_slice
+              environment_key: default
+              spark_python_task:
+                python_file: src/autoscaler/main.py
+                parameters:
+                  - "--mode"
+                  - "batch_create"
+                  - "--quota"
+                  - "{{job.parameters.quota}}"
+                  - "--slice"
+                  - "{{input}}"
+                  - "--total-slices"
+                  - "10"
 
       environments:
         - environment_key: default
@@ -122,6 +139,10 @@ resources:
       # IMPORTANT: when adding/removing postgres_projects above, update
       # the real_names default to match (pipe-separated project_ids).
       parameters:
+        - name: enabled
+          default: "${var.enabled}"
+        - name: placeholders
+          default: "${var.placeholders}"
         - name: real_names
           default: "fleet-proj-1|fleet-proj-2|fleet-proj-3"
         - name: quota
