@@ -266,17 +266,13 @@ else:
 
 # COMMAND ----------
 
-# ── Step 4: Suspend all placeholder endpoints ────────────────────────────────
-# The platform creates endpoints in ACTIVE state. We must explicitly disable
-# them so compute scales to zero and stops incurring cost.
+# ── Step 4: Suspend newly created placeholder endpoints ──────────────────────
+# The platform creates endpoints in ACTIVE state. We disable them immediately
+# after creation so compute scales to zero. Already-existing placeholders were
+# suspended on a previous run, so we only touch the new ones.
 
-if placeholders_enabled:
-    # Re-list to get the current set of placeholders (includes newly created)
-    all_current = list_all_projects()
-    all_placeholders = [p for p in all_current
-                        if p["owner"] == OWNER_PLACEHOLDER]
-
-    logger.info("Suspending endpoints for %d placeholders", len(all_placeholders))
+if placeholders_enabled and created_count > 0:
+    logger.info("Suspending endpoints for %d newly created placeholders", created_count)
 
     suspended_count = 0
     suspend_skipped = 0
@@ -288,7 +284,6 @@ if placeholders_enabled:
             return True
         except Exception as exc:
             err = str(exc)
-            # Already disabled or endpoint not ready yet — not fatal
             if "404" in err or "NOT_FOUND" in err:
                 logger.warning("suspend: %s endpoint not found, skipping", name)
                 return False
@@ -296,8 +291,8 @@ if placeholders_enabled:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
         future_to_name = {
-            executor.submit(_suspend_one, p["name"]): p["name"]
-            for p in all_placeholders
+            executor.submit(_suspend_one, name): name
+            for name in names_to_create
         }
         for i, future in enumerate(concurrent.futures.as_completed(future_to_name), 1):
             name = future_to_name[future]
@@ -309,10 +304,10 @@ if placeholders_enabled:
             except Exception as exc:
                 suspend_skipped += 1
                 logger.error("suspend: %s failed — %s", name, str(exc)[:200])
-            if i % 200 == 0 or i == len(all_placeholders):
+            if i % 200 == 0 or i == len(names_to_create):
                 elapsed = time.time() - t0
                 logger.info("Suspend progress: %d/%d (suspended=%d, skipped=%d, %.1fs)",
-                            i, len(all_placeholders), suspended_count, suspend_skipped, elapsed)
+                            i, len(names_to_create), suspended_count, suspend_skipped, elapsed)
 
     elapsed = time.time() - t0
     logger.info("Suspend done: suspended=%d, skipped=%d in %.1fs",
