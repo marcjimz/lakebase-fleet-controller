@@ -75,63 +75,21 @@ resources:
         quartz_cron_expression: "0 */10 * * * ?"
         timezone_id: "UTC"
       tasks:
-        # ── Step 1: Plan ────────────────────────────────────────────────────
-        # Notebook task so it can use dbutils.jobs.taskValues.set() to pass
-        # delete_names and create_names to downstream tasks.
-        - task_key: plan
+        - task_key: autoscale
           notebook_task:
-            notebook_path: src/autoscaler/plan.py
+            notebook_path: src/autoscaler/main.py
             source: WORKSPACE
             base_parameters:
-              real_names: "{{job.parameters.real_names}}"
-              quota: "{{job.parameters.quota}}"
               enabled: "{{job.parameters.enabled}}"
               placeholders: "{{job.parameters.placeholders}}"
+              quota: "{{job.parameters.quota}}"
+              real_names: "{{job.parameters.real_names}}"
           environment_key: default
-
-        # ── Step 2: Cleanup ─────────────────────────────────────────────────
-        # Deletes orphans + excess placeholders identified by the plan task.
-        - task_key: cleanup
-          depends_on:
-            - task_key: plan
-          environment_key: default
-          spark_python_task:
-            python_file: src/autoscaler/main.py
-            parameters:
-              - "--mode"
-              - "cleanup_batch"
-              - "--delete-names"
-              - "{{tasks.plan.values.delete_names}}"
-
-        # ── Step 3: Fill ──────────────────────────────────────────────────────
-        # Creates placeholders across 10 parallel slices with for_each_task.
-        # Each slice lists projects, takes its partition, then does two-phase
-        # processing: create all projects, then enable scale-to-zero.
-        - task_key: fill
-          depends_on:
-            - task_key: cleanup
-          for_each_task:
-            concurrency: 10
-            inputs: "{{tasks.plan.values.fill_slices}}"
-            task:
-              task_key: fill_slice
-              environment_key: default
-              spark_python_task:
-                python_file: src/autoscaler/main.py
-                parameters:
-                  - "--mode"
-                  - "batch_create"
-                  - "--quota"
-                  - "{{job.parameters.quota}}"
-                  - "--slice"
-                  - "{{input}}"
-                  - "--total-slices"
-                  - "10"
 
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "5"
             dependencies:
               - databricks-sdk
       # ── Job parameters ──────────────────────────────────────────────────
