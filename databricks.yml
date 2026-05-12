@@ -14,7 +14,7 @@ variables:
     default: "true"
   placeholders:
     description: "Fill remaining quota with placeholder projects"
-    default: "true"
+    default: "false"
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
@@ -24,16 +24,25 @@ resources:
   # and protect them from deletion. When adding/removing projects, update
   # the real_names job parameter default to match (pipe-separated).
   # ────────────────────────────────────────────────────────────────────────────
-  # postgres_projects:
-  #   my_project:
-  #     project_id: my-project
-  #     display_name: my-project
-  #     pg_version: 17
-  #     custom_tags:
-  #       - key: owner
-  #         value: dab
-  #       - key: managed_by
-  #         value: lakebase-fleet-controller
+  postgres_projects:
+    demo-project-1:
+      project_id: demo-project-1
+      display_name: demo-project-1
+      pg_version: 17
+      custom_tags:
+        - key: owner
+          value: dab
+        - key: managed_by
+          value: lakebase-fleet-controller
+    # demo-project-1:
+    #   project_id: demo-project-1
+    #   display_name: demo-project-1
+    #   pg_version: 17
+    #   custom_tags:
+    #     - key: owner
+    #       value: dab
+    #     - key: managed_by
+    #       value: lakebase-fleet-controller
 
   # ────────────────────────────────────────────────────────────────────────────
   # AUTOSCALER JOB — single notebook that lists, cleans, and fills projects.
