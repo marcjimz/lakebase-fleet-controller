@@ -6,7 +6,7 @@
 
 > **Do not use the same workspace across multiple promotion stages (DEV/QA/STG/PROD).** This has not been tested and is not recommended.
 
-A **fleet** is a large, organized group of databases managed together as a single entity to streamline administration, monitoring, and lifecycle operations. This Databricks Asset Bundle manages a fleet of Lakebase projects — you edit `databricks.yml` to add or remove projects; CI handles the rest. An autoscaler notebook runs on a schedule to enforce the desired state: cleaning up orphans, suspending idle compute, and optionally filling remaining quota with placeholders.
+A **fleet** is a large, organized group of databases managed together as a single entity to streamline administration, monitoring, and lifecycle operations. This is a solution for controlling the provisioning of Lakebase projects in your workspace — only projects declared in the bundle are protected; everything else is treated as an orphan and cleaned up. You edit `databricks.yml` to add or remove projects; CI handles the rest. An autoscaler notebook runs on a schedule to enforce the desired state: cleaning up orphans, suspending idle compute, and optionally filling remaining quota with placeholders.
 
 ## Parameters
 
