@@ -30,37 +30,6 @@ resources:
   # To add:    copy an existing block, change project_id + display_name.
   # To remove: delete the resource block (autoscaler will clean up).
   # ────────────────────────────────────────────────────────────────────────────
-  postgres_projects:
-    fleet_proj_1:
-      project_id: fleet-proj-1
-      display_name: fleet-proj-1
-      pg_version: 17
-      custom_tags:
-        - key: owner
-          value: dab
-        - key: managed_by
-          value: lakebase-fleet-controller
-
-    fleet_proj_2:
-      project_id: fleet-proj-2
-      display_name: fleet-proj-2
-      pg_version: 17
-      custom_tags:
-        - key: owner
-          value: dab
-        - key: managed_by
-          value: lakebase-fleet-controller
-
-    fleet_proj_3:
-      project_id: fleet-proj-3
-      display_name: fleet-proj-3
-      pg_version: 17
-      custom_tags:
-        - key: owner
-          value: dab
-        - key: managed_by
-          value: lakebase-fleet-controller
-
   # ────────────────────────────────────────────────────────────────────────────
   # AUTOSCALER JOB — fills remaining quota with stopped placeholders and
   # cleans up anything not managed by this bundle.
@@ -102,7 +71,7 @@ resources:
         - name: placeholders
           default: "${var.placeholders}"
         - name: real_names
-          default: "fleet-proj-1|fleet-proj-2|fleet-proj-3"
+          default: ""
         - name: quota
           default: "${var.quota}"
       tags:
