@@ -93,6 +93,13 @@ def create_project(project_id, display_name, custom_tags=None):
 def delete_project(project_id):
     ws.api_client.do("DELETE", f"{_PROJECTS_API}/{project_id}")
 
+
+def suspend_endpoint(project_id):
+    """Disable the primary endpoint so compute scales to zero."""
+    url = (f"{_PROJECTS_API}/{project_id}/branches/production"
+           f"/endpoints/primary?update_mask=spec.disabled")
+    ws.api_client.do("PATCH", url, body={"spec": {"disabled": True}})
+
 # COMMAND ----------
 
 # ── Step 1: List & classify ──────────────────────────────────────────────────
@@ -259,6 +266,63 @@ else:
 
 # COMMAND ----------
 
+# ── Step 4: Suspend all placeholder endpoints ────────────────────────────────
+# The platform creates endpoints in ACTIVE state. We must explicitly disable
+# them so compute scales to zero and stops incurring cost.
+
+if placeholders_enabled:
+    # Re-list to get the current set of placeholders (includes newly created)
+    all_current = list_all_projects()
+    all_placeholders = [p for p in all_current
+                        if p["owner"] == OWNER_PLACEHOLDER]
+
+    logger.info("Suspending endpoints for %d placeholders", len(all_placeholders))
+
+    suspended_count = 0
+    suspend_skipped = 0
+    t0 = time.time()
+
+    def _suspend_one(name):
+        try:
+            suspend_endpoint(name)
+            return True
+        except Exception as exc:
+            err = str(exc)
+            # Already disabled or endpoint not ready yet — not fatal
+            if "404" in err or "NOT_FOUND" in err:
+                logger.warning("suspend: %s endpoint not found, skipping", name)
+                return False
+            raise
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        future_to_name = {
+            executor.submit(_suspend_one, p["name"]): p["name"]
+            for p in all_placeholders
+        }
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_name), 1):
+            name = future_to_name[future]
+            try:
+                if future.result():
+                    suspended_count += 1
+                else:
+                    suspend_skipped += 1
+            except Exception as exc:
+                suspend_skipped += 1
+                logger.error("suspend: %s failed — %s", name, str(exc)[:200])
+            if i % 200 == 0 or i == len(all_placeholders):
+                elapsed = time.time() - t0
+                logger.info("Suspend progress: %d/%d (suspended=%d, skipped=%d, %.1fs)",
+                            i, len(all_placeholders), suspended_count, suspend_skipped, elapsed)
+
+    elapsed = time.time() - t0
+    logger.info("Suspend done: suspended=%d, skipped=%d in %.1fs",
+                suspended_count, suspend_skipped, elapsed)
+else:
+    suspended_count = 0
+    suspend_skipped = 0
+
+# COMMAND ----------
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 summary = {
@@ -271,6 +335,8 @@ summary = {
     "delete_skipped": delete_skipped,
     "created": created_count,
     "create_failed": create_failed,
+    "suspended": suspended_count,
+    "suspend_skipped": suspend_skipped,
 }
 
 logger.info("=== SUMMARY ===")
