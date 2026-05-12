@@ -55,7 +55,7 @@ jobs:
       - name: Reconcile fleet
         run: |
           databricks bundle run autoscaler -t dev \
-            --params "enabled=true,placeholders=false,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }}"
+            --params "enabled=true,placeholders=true,real_names=${{ steps.targets.outputs.real_names }},quota=${{ steps.targets.outputs.quota }}"
 
   # ───────────────────────────────────────────────────────────────────────────
   # QA — uncomment to enable. Requires a "QA" GitHub environment.

@@ -6,7 +6,18 @@
 
 > **Do not use the same workspace across multiple promotion stages (DEV/QA/STG/PROD).** This has not been tested and is not recommended.
 
-A single Databricks Asset Bundle that manages a fleet of Lakebase projects. You edit `databricks.yml` to add or remove projects; CI handles the rest.
+A single Databricks Asset Bundle that manages a fleet of Lakebase projects. You edit `databricks.yml` to add or remove projects; CI handles the rest. An autoscaler notebook runs on a schedule to enforce the desired state — cleaning up orphans and optionally filling remaining quota with placeholders.
+
+## Parameters
+
+The autoscaler job accepts four parameters. CI passes them via `--params`; scheduled runs use the defaults from `databricks.yml`.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `enabled` | `"true"` | Master switch. When `true`, the autoscaler runs normally (list, classify, delete, fill). When `false`, the notebook exits immediately and does nothing. |
+| `placeholders` | `"false"` | Controls placeholder lifecycle. When `true`, the autoscaler fills every unused slot up to `quota` with `fleet-placeholder-NNNN` projects. When `false`, all existing placeholders are **deleted** and no new ones are created. Orphan cleanup still runs regardless. |
+| `quota` | `1000` | Maximum number of Lakebase projects allowed in the workspace. `target_placeholders = quota - real_count`. |
+| `real_names` | `""` | Pipe-separated list of DAB-managed project IDs (e.g. `"my-project\|other-project"`). These are protected from deletion. CI extracts this automatically from the bundle's `postgres_projects` resources. |
 
 ## Setup
 
@@ -49,29 +60,28 @@ In `databricks.yml`, set your workspace host under `targets.dev`.
 
 ### 4. Add a project
 
-Add a `database_instances` resource block to `databricks.yml`:
+Uncomment the `postgres_projects` section in `databricks.yml` and add a resource block:
 
 ```yaml
-    lakebase_my_project:
-      name: my-project
-      capacity: CU_1    # CU_1, CU_2, CU_4, or CU_8
+  postgres_projects:
+    my_project:
+      project_id: my-project
+      display_name: my-project
+      pg_version: 17
       custom_tags:
         - key: owner
           value: dab
         - key: managed_by
           value: lakebase-fleet-controller
-      lifecycle:
-        prevent_destroy: true
 ```
 
-Push to `main`. CI deploys the project and fills remaining quota with placeholders.
+Then update the `real_names` default in the job parameters to include the new project ID (pipe-separated if multiple).
+
+Push to `main`. CI deploys the project and runs the autoscaler.
 
 ### 5. Remove a project
 
-Two-PR process (by design):
-
-1. First PR: set `prevent_destroy: false` on the resource
-2. Second PR: delete the resource block
+Delete the resource block from `databricks.yml` and remove the project ID from `real_names`. Push to `main`. The autoscaler will classify the project as an orphan and delete it on the next run.
 
 ### 6. Enable promotion stages
 

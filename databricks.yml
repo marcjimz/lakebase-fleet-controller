@@ -6,9 +6,6 @@ bundle:
       enabled: true
 
 variables:
-  deploy_sp:
-    description: "Service principal for CI deploys (used by run_as in promotion targets)"
-    default: ""
   quota:
     description: "Maximum Lakebase instances allowed in the workspace"
     default: 1000
@@ -17,22 +14,29 @@ variables:
     default: "true"
   placeholders:
     description: "Fill remaining quota with placeholder projects"
-    default: "false"
+    default: "true"
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
-  # LAKEBASE PROJECTS — edit this section to add or remove real projects.
+  # LAKEBASE PROJECTS — uncomment and duplicate to add real projects.
   #
-  # Each entry creates a managed Lakebase Autoscaling project.
-  # The autoscaler uses the owner=dab custom_tag to identify DAB-managed
-  # projects and protect them from deletion.
-  #
-  # To add:    copy an existing block, change project_id + display_name.
-  # To remove: delete the resource block (autoscaler will clean up).
+  # The autoscaler uses the owner=dab tag to identify DAB-managed projects
+  # and protect them from deletion. When adding/removing projects, update
+  # the real_names job parameter default to match (pipe-separated).
   # ────────────────────────────────────────────────────────────────────────────
+  # postgres_projects:
+  #   my_project:
+  #     project_id: my-project
+  #     display_name: my-project
+  #     pg_version: 17
+  #     custom_tags:
+  #       - key: owner
+  #         value: dab
+  #       - key: managed_by
+  #         value: lakebase-fleet-controller
+
   # ────────────────────────────────────────────────────────────────────────────
-  # AUTOSCALER JOB — fills remaining quota with stopped placeholders and
-  # cleans up anything not managed by this bundle.
+  # AUTOSCALER JOB — single notebook that lists, cleans, and fills projects.
   # ────────────────────────────────────────────────────────────────────────────
   jobs:
     autoscaler:
@@ -95,7 +99,7 @@ targets:
   #   workspace:
   #     host: https://<QA_WORKSPACE>.cloud.databricks.com
   #   run_as:
-  #     service_principal_name: ${var.deploy_sp}
+  #     service_principal_name: <SERVICE_PRINCIPAL_NAME>
 
   # stg:
   #   mode: production
@@ -104,7 +108,7 @@ targets:
   #   workspace:
   #     host: https://<STG_WORKSPACE>.cloud.databricks.com
   #   run_as:
-  #     service_principal_name: ${var.deploy_sp}
+  #     service_principal_name: <SERVICE_PRINCIPAL_NAME>
 
   # prod:
   #   mode: production
@@ -113,4 +117,4 @@ targets:
   #   workspace:
   #     host: https://<PROD_WORKSPACE>.cloud.databricks.com
   #   run_as:
-  #     service_principal_name: ${var.deploy_sp}
+  #     service_principal_name: <SERVICE_PRINCIPAL_NAME>
