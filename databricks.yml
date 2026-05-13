@@ -32,7 +32,7 @@ resources:
       project_id: fleet-demo-1
       display_name: fleet-demo-1
       pg_version: 17
-      custom_tags:
+      custom_tags: &dab_tags
         - key: owner
           value: dab
         - key: managed_by
@@ -41,20 +41,12 @@ resources:
       project_id: fleet-demo-2
       display_name: fleet-demo-2
       pg_version: 17
-      custom_tags:
-        - key: owner
-          value: dab
-        - key: managed_by
-          value: lakebase-fleet-controller
+      custom_tags: *dab_tags
     lakebase-project-demo:
       project_id: lakebase-project-demo
       display_name: lakebase-project-demo
       pg_version: 17
-      custom_tags:
-        - key: owner
-          value: dab
-        - key: managed_by
-          value: lakebase-fleet-controller
+      custom_tags: *dab_tags
 
   # ────────────────────────────────────────────────────────────────────────────
   # AUTOSCALER JOB — single notebook that lists, cleans, and fills projects.
