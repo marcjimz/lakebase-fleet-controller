@@ -10,7 +10,7 @@ A **fleet** is a large, organized group of databases managed together as a singl
 
 ## Parameters
 
-The autoscaler job accepts four parameters. CI passes them via `--params`; scheduled runs use the defaults from `databricks.yml`.
+The autoscaler job accepts five parameters. CI passes them via `--params`; scheduled runs use the defaults from `databricks.yml`.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -18,6 +18,7 @@ The autoscaler job accepts four parameters. CI passes them via `--params`; sched
 | `placeholders` | `"false"` | Controls placeholder lifecycle. When `true`, the autoscaler fills every unused slot up to `quota` with `fleet-placeholder-NNNN` projects. When `false`, all existing placeholders are **deleted** and no new ones are created. Orphan cleanup still runs regardless. |
 | `quota` | `1000` | Maximum number of Lakebase projects allowed in the workspace. `target_placeholders = quota - real_count`. |
 | `real_names` | `""` | Pipe-separated list of DAB-managed project IDs (e.g. `"my-project\|other-project"`). These are protected from deletion. CI extracts this automatically from the bundle's `postgres_projects` resources. |
+| `contact_emails` | `""` | Comma-separated list of email addresses included in failure messages. The job **fails** when a project cannot be deleted due to protected branches, and the error output lists these contacts for manual follow-up. To receive email alerts on failure, uncomment `email_notifications` in the job config. |
 
 ## Setup
 

@@ -15,6 +15,9 @@ variables:
   placeholders:
     description: "Fill remaining quota with placeholder projects"
     default: "false"
+  contact_emails:
+    description: "Comma-separated emails for autoscaler failure notifications"
+    default: ""
 
 resources:
   # ────────────────────────────────────────────────────────────────────────────
@@ -75,6 +78,7 @@ resources:
               placeholders: "{{job.parameters.placeholders}}"
               quota: "{{job.parameters.quota}}"
               real_names: "{{job.parameters.real_names}}"
+              contact_emails: "{{job.parameters.contact_emails}}"
           environment_key: default
 
       environments:
@@ -95,6 +99,14 @@ resources:
           default: "" # real_names
         - name: quota
           default: "${var.quota}"
+        - name: contact_emails
+          default: "${var.contact_emails}"
+      # ── Email notifications ────────────────────────────────────────────────
+      # Uncomment and add emails to receive alerts on autoscaler failures
+      # (e.g. projects with protected branches that block deletion).
+      # email_notifications:
+      #   on_failure:
+      #     - user@example.com
       tags:
         owner: dab
 

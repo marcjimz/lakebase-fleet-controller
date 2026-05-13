@@ -34,15 +34,17 @@ dbutils.widgets.text("enabled", "true", "Enable autoscaler")
 dbutils.widgets.text("placeholders", "true", "Fill with placeholders")
 dbutils.widgets.text("quota", "1000", "Workspace quota")
 dbutils.widgets.text("real_names", "", "Real instance names (pipe-separated)")
+dbutils.widgets.text("contact_emails", "", "Contact emails (comma-separated)")
 
 enabled = dbutils.widgets.get("enabled").lower() == "true"
 placeholders_enabled = dbutils.widgets.get("placeholders").lower() == "true"
 quota = int(dbutils.widgets.get("quota"))
 raw_real_names = dbutils.widgets.get("real_names")
 known_real_names = {n.strip() for n in raw_real_names.split("|") if n.strip()}
+contact_emails = [e.strip() for e in dbutils.widgets.get("contact_emails").split(",") if e.strip()]
 
-logger.info("Parameters: enabled=%s, placeholders=%s, quota=%d, real_names=%s",
-            enabled, placeholders_enabled, quota, known_real_names)
+logger.info("Parameters: enabled=%s, placeholders=%s, quota=%d, real_names=%s, contact_emails=%s",
+            enabled, placeholders_enabled, quota, known_real_names, contact_emails)
 
 if not enabled:
     logger.info("Autoscaler DISABLED — exiting")
@@ -151,7 +153,7 @@ elif len(placeholders) > target_placeholders:
     placeholders = placeholders[excess:]
 
 deleted = 0
-delete_skipped = 0
+protected_branch_failures = []
 for name in delete_names:
     try:
         logger.info("Deleting: %s", name)
@@ -160,15 +162,25 @@ for name in delete_names:
     except Exception as exc:
         err = str(exc)
         if "protected branches" in err or "FAILED_PRECONDITION" in err:
-            logger.warning("Skipping %s — protected branches (manual cleanup needed)", name)
-            delete_skipped += 1
+            logger.error("FAILED to delete %s — has protected branches", name)
+            protected_branch_failures.append(name)
         elif "404" in err or "NOT_FOUND" in err:
             logger.info("%s already gone, skipping", name)
         else:
             raise
 
-logger.info("Cleanup done: deleted=%d, skipped=%d (of %d targeted)",
-            deleted, delete_skipped, len(delete_names))
+logger.info("Cleanup done: deleted=%d, protected_branch_failures=%d (of %d targeted)",
+            deleted, len(protected_branch_failures), len(delete_names))
+
+if protected_branch_failures:
+    msg = (
+        f"Cannot delete {len(protected_branch_failures)} project(s) with protected branches: "
+        f"{', '.join(protected_branch_failures)}. "
+        f"Manual intervention required — remove protected branches before retrying."
+    )
+    if contact_emails:
+        msg += f" Contact: {', '.join(contact_emails)}"
+    raise RuntimeError(msg)
 
 # COMMAND ----------
 
@@ -327,7 +339,6 @@ summary = {
     "existing_placeholders": len(placeholders),
     "orphans_found": len(orphans),
     "deleted": deleted,
-    "delete_skipped": delete_skipped,
     "created": created_count,
     "create_failed": create_failed,
     "suspended": suspended_count,
