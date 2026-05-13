@@ -48,7 +48,7 @@ jobs:
 
       - name: Sync real_names default into bundle
         run: |
-          sed -i "s|^          default: .*# real_names|          default: \"${{ steps.targets.outputs.real_names }}\" # real_names|" databricks.yml
+          sed -i "s@^          default: .*# real_names@          default: \"${{ steps.targets.outputs.real_names }}\" # real_names@" databricks.yml
 
       - name: Pre-deploy reconciliation (cleanup orphans + free slots)
         run: bash scripts/pre_deploy_shrink.sh "${{ steps.targets.outputs.real_names }}" "${{ steps.targets.outputs.real_count }}"
