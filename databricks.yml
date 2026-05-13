@@ -38,8 +38,8 @@ resources:
         - key: managed_by
           value: lakebase-fleet-controller
     fleet-demo-2:
-      project_id: fleet-demo-1
-      display_name: fleet-demo-1
+      project_id: fleet-demo-2
+      display_name: fleet-demo-2
       pg_version: 17
       custom_tags:
         - key: owner
