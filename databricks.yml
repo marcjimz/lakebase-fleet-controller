@@ -25,24 +25,24 @@ resources:
   # the real_names job parameter default to match (pipe-separated).
   # ────────────────────────────────────────────────────────────────────────────
   postgres_projects:
-    demo-project-1:
-      project_id: demo-project-1
-      display_name: demo-project-1
+    fleet-demo-1:
+      project_id: fleet-demo-1
+      display_name: fleet-demo-1
       pg_version: 17
       custom_tags:
         - key: owner
           value: dab
         - key: managed_by
           value: lakebase-fleet-controller
-    # demo-project-1:
-    #   project_id: demo-project-1
-    #   display_name: demo-project-1
-    #   pg_version: 17
-    #   custom_tags:
-    #     - key: owner
-    #       value: dab
-    #     - key: managed_by
-    #       value: lakebase-fleet-controller
+    lakebase-project-demo:
+      project_id: lakebase-project-demo
+      display_name: lakebase-project-demo
+      pg_version: 17
+      custom_tags:
+        - key: owner
+          value: dab
+        - key: managed_by
+          value: lakebase-fleet-controller
 
   # ────────────────────────────────────────────────────────────────────────────
   # AUTOSCALER JOB — single notebook that lists, cleans, and fills projects.
@@ -76,15 +76,14 @@ resources:
               - databricks-sdk
       # ── Job parameters ──────────────────────────────────────────────────
       # Defaults are used by scheduled runs. CI overrides them with --params.
-      # IMPORTANT: when adding/removing postgres_projects above, update
-      # the real_names default to match (pipe-separated project_ids).
+      # real_names is auto-synced from postgres_projects during CI deploy.
       parameters:
         - name: enabled
           default: "${var.enabled}"
         - name: placeholders
           default: "${var.placeholders}"
         - name: real_names
-          default: ""
+          default: "" # real_names
         - name: quota
           default: "${var.quota}"
       tags:
